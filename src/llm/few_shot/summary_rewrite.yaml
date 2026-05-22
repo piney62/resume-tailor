@@ -1,0 +1,28 @@
+# Few-shot examples for the summary rewriter.
+# Each item carries an `original` summary, a `direction` (mirroring
+# SubstitutionPlan.summary_focus), and a `rewritten` example output.
+
+- original: >-
+    Backend engineer with 8 years building monolithic CRM systems for
+    enterprise customers, focused on Java and PostgreSQL.
+  direction: >-
+    Pivot toward distributed systems and event-driven architecture.
+    Mirror the JD phrase "real-time data pipelines".
+  rewritten: >-
+    Backend engineer with 8 years evolving enterprise data systems
+    toward distributed, event-driven architectures, with deep
+    experience in Java and PostgreSQL underpinning real-time data
+    pipelines.
+
+- original: >-
+    Full-stack developer with experience in React, Node.js, and
+    PostgreSQL. Built customer-facing dashboards and internal admin
+    tools.
+  direction: >-
+    Emphasize backend-heavy work and Kubernetes-based deployment.
+    Downplay frontend tooling.
+  rewritten: >-
+    Full-stack developer with experience designing and operating
+    Node.js services on Kubernetes alongside PostgreSQL-backed data
+    layers, delivering customer-facing dashboards on top of robust
+    backend systems.

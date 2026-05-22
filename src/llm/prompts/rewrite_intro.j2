@@ -1,10 +1,11 @@
-Rewrite this single resume bullet to align with the target JD.
+Rewrite this role intro paragraph to align with the target JD.
 
 ROLE CONTEXT (do not modify):
   company: {{ role.company }}
   title: {{ role.title }}
+  dates: {{ role.dates }}
 
-ORIGINAL BULLET:
+ORIGINAL INTRO:
 """
 {{ original }}
 """
@@ -12,13 +13,13 @@ ORIGINAL BULLET:
 JD CONTEXT:
   must_have: {{ jd.must_have | map(attribute='tech') | join(", ") or "(none)" }}
   domain_keywords: {{ jd.domain_keywords | join(", ") or "(none)" }}
+  exact_phrases_to_mirror: {{ jd.exact_phrases_to_mirror | join(" | ") or "(none)" }}
 
-SUBSTITUTIONS that apply to bullets (only swap when the old term is NOT
-tied to a quantified achievement in this bullet):
+SUBSTITUTIONS that apply to intros:
 {% for s in substitutions %}
   - "{{ s.old }}" -> "{{ s.new }}" ({{ s.domain }})
 {% else %}
-  (none)
+  (none — adjust framing only)
 {% endfor %}
 
 FEW-SHOT EXAMPLES (study these, do not echo them):
@@ -30,14 +31,9 @@ REWRITTEN: "{{ ex.rewritten }}"
 {% endfor %}
 
 HARD RULES:
-- PRESERVE every number, percentage, year, currency amount, and ALL units
-  ("ms", "rps", "x", "M", "k") EXACTLY as written. If the original says
-  "10M events per day", the rewrite must contain "10M events per day".
+- PRESERVE every number, percentage, year, headcount, and quantified metric exactly as written.
 - PRESERVE the company name "{{ role.company }}" verbatim if it appears.
-- If a proposed substitution does not fit this specific bullet (e.g. the
-  old term is tied to a metric), KEEP the original term and only adjust
-  framing.
-- If no improvement is possible, RETURN THE ORIGINAL BULLET VERBATIM.
+- NEVER claim a new domain of work the candidate did not perform in this role.
 - NEVER use these banned words: {{ banned_words | join(", ") }}.
 - Keep length within +/- 25% of the original character count.
-- Output ONLY a JSON object: {"text": "<rewritten bullet>"}.
+- Output ONLY a JSON object: {"text": "<rewritten intro>"}.

@@ -1,0 +1,34 @@
+# Few-shot examples for individual bullet rewrites. Each example
+# shows how to mirror JD-aligned language WITHOUT changing the
+# original quantified metrics.
+
+- original: >-
+    Built a notification service handling 10M events per day,
+    reducing average delivery latency from 800ms to 200ms.
+  direction: >-
+    JD focus: event-driven microservices, low-latency systems.
+  rewritten: >-
+    Built an event-driven notification microservice handling 10M
+    events per day, reducing average delivery latency from 800ms to
+    200ms.
+
+- original: >-
+    Mentored 6 junior engineers, with 2 receiving promotions within
+    12 months.
+  direction: >-
+    JD focus: distributed systems. Bullet has no JD-relevant tech;
+    keep verbatim or near-verbatim.
+  rewritten: >-
+    Mentored 6 junior engineers, with 2 receiving promotions within
+    12 months.
+
+- original: >-
+    Reduced API p99 latency from 800ms to 200ms by introducing a
+    Redis cache in front of PostgreSQL.
+  direction: >-
+    JD focus: streaming systems. Substitution: Redis -> Kafka is NOT
+    applicable here (Redis is used as a cache, not a queue). Leave
+    technology verbatim and only adjust framing.
+  rewritten: >-
+    Reduced API p99 latency from 800ms to 200ms by introducing a
+    Redis read-through cache in front of PostgreSQL.
