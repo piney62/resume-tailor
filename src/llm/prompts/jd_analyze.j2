@@ -1,1 +1,43 @@
-{# JD Analyzer prompt — populated in Step 4. #}
+Analyze the following job description and extract structured signals a candidate would use to tailor their resume.
+
+JD:
+"""
+{{ jd_text }}
+"""
+
+Return a single JSON object with this exact shape:
+
+{
+  "must_have": [
+    {"tech": "<short name>", "category": "<see categories>", "evidence": "<short quote from JD>"}
+  ],
+  "nice_to_have": [
+    {"tech": "<short name>", "category": "<see categories>"}
+  ],
+  "soft_skills": ["<short phrase>"],
+  "domain_keywords": ["<short phrase>"],
+  "seniority_level": "junior|mid|senior|staff|principal",
+  "exact_phrases_to_mirror": ["<short phrase>"]
+}
+
+Categories (use one of):
+  frontend, backend, cloud, db, data, ml, devops, mobile,
+  language, framework, tool, methodology, security, streaming, other
+
+Extraction rules:
+- must_have: technologies, frameworks, languages, or experience the JD explicitly requires.
+  Signals: "required", "must have", "X+ years of <tech>", "responsibilities include working with <tech>".
+- nice_to_have: items marked as "preferred", "plus", "bonus", "nice to have".
+- evidence: a short verbatim quote (≤ 15 words) from the JD that justifies the inclusion.
+- soft_skills: only those explicitly named (e.g., "strong communication", "ownership"). Do not invent.
+- domain_keywords: business / industry / domain terms (e.g., "real-time analytics",
+  "event-driven architecture", "fintech", "developer productivity"). Not technologies.
+- seniority_level: infer from years required, scope, title, and reporting depth.
+- exact_phrases_to_mirror: 3-7 short, distinctive phrases from the JD that a resume
+  could echo back to improve ATS keyword match. Prefer noun phrases.
+
+Hard rules:
+- Do not invent skills the JD does not mention.
+- Do not include duplicates between must_have and nice_to_have.
+- If a section has no items, return an empty list.
+- Output the JSON object ONLY. No prose, no markdown fences, no comments.
