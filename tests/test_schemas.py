@@ -10,14 +10,13 @@ from src.models.schemas import (
     ExperienceIndices,
     Header,
     HeaderIndices,
+    HolisticRewriteOutput,
     JDAnalysis,
     MustHaveItem,
     NiceToHaveItem,
     Resume,
     SkillsSection,
     SkillsSectionIndices,
-    Substitution,
-    SubstitutionPlan,
     Summary,
     ValidationIssue,
     ValidationReport,
@@ -134,22 +133,54 @@ def test_negative_paragraph_indices_rejected() -> None:
         HeaderIndices(name_idx=-1)
 
 
-# ---------- SubstitutionPlan ----------
+# ---------- HolisticRewriteOutput ----------
 
 
-def test_substitution_plan_minimal() -> None:
-    plan = SubstitutionPlan(summary_focus="Pivot toward streaming infra")
-    assert plan.substitutions == []
+def test_holistic_output_minimal() -> None:
+    out = HolisticRewriteOutput(
+        summary_text="Senior backend engineer.",
+        experience=[],
+        skills_section_categories={},
+    )
+    assert out.header_title is None
+    assert out.summary_text.startswith("Senior")
 
 
-def test_substitution_apply_to_must_not_be_empty() -> None:
+def test_holistic_output_roundtrip() -> None:
+    payload = {
+        "header_title": "STAFF ENGINEER, BACKEND PLATFORMS",
+        "summary_text": "12 years building distributed systems.",
+        "experience": [
+            {
+                "intro": "Led platform team.",
+                "bullets": ["Built Kafka pipeline.", "Cut latency by 40%."],
+                "skills_line": "Skills: Python, Kafka",
+            }
+        ],
+        "skills_section_categories": {"Languages": ["Python", "Java"]},
+    }
+    out = HolisticRewriteOutput(**payload)
+    again = HolisticRewriteOutput.model_validate_json(out.model_dump_json())
+    assert again == out
+
+
+def test_holistic_output_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
-        Substitution(old="Redis", new="Kafka", domain="streaming", apply_to=[])
+        HolisticRewriteOutput(
+            summary_text="x",
+            experience=[],
+            skills_section_categories={},
+            unknown_field=42,  # type: ignore[call-arg]
+        )
 
 
-def test_substitution_apply_to_literals_enforced() -> None:
-    with pytest.raises(ValidationError):
-        Substitution(old="Redis", new="Kafka", domain="streaming", apply_to=["header"])  # type: ignore[list-item]
+def test_holistic_output_skills_line_optional() -> None:
+    out = HolisticRewriteOutput(
+        summary_text="x",
+        experience=[{"intro": "Led team.", "bullets": ["did stuff"], "skills_line": None}],
+        skills_section_categories={},
+    )
+    assert out.experience[0].skills_line is None
 
 
 # ---------- ValidationReport ----------

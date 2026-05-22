@@ -312,17 +312,18 @@ if result is not None:
             else:
                 st.caption("No text changes detected.")
 
-    # JD analysis dump
+    # JD analysis dump (Stage 2 in the v2 hybrid pipeline)
     log_dir = Path(result.log_dir)
-    jd_json = log_dir / "1_jd_analysis.json"
+    jd_json = log_dir / "2_jd_analysis.json"
     if jd_json.exists():
         with st.expander("JD analysis"):
             st.json(json.loads(jd_json.read_text(encoding="utf-8")))
 
-    plan_json = log_dir / "3_substitution_plan.json"
-    if plan_json.exists():
-        with st.expander("Substitution plan"):
-            st.json(json.loads(plan_json.read_text(encoding="utf-8")))
+    # Holistic rewriter's initial pass (full LLM output merged into a Resume).
+    rewritten_json = log_dir / "3a_rewritten_initial.json"
+    if rewritten_json.exists():
+        with st.expander("Holistic rewrite (initial pass)"):
+            st.json(json.loads(rewritten_json.read_text(encoding="utf-8")))
 
     with st.expander("Groq usage"):
         st.json(result.groq_summary)

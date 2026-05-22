@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SeniorityLevel = Literal["junior", "mid", "senior", "staff", "principal"]
 Severity = Literal["critical", "warning"]
-ApplyTo = Literal["skills", "bullets", "summary", "intro"]
+RoleTier = Literal["recent", "mid", "oldest"]
 
 
 class _Base(BaseModel):
@@ -125,23 +125,6 @@ class Resume(_Base):
     raw_paragraphs: list[str] = Field(default_factory=list)
 
 
-# ---------- Stage 3: Substitution Planner ----------
-
-
-class Substitution(_Base):
-    old: str
-    new: str
-    domain: str
-    apply_to: list[ApplyTo] = Field(min_length=1)
-
-
-class SubstitutionPlan(_Base):
-    title_modifier: Optional[str] = None
-    substitutions: list[Substitution] = Field(default_factory=list)
-    additions_to_skills: list[str] = Field(default_factory=list)
-    summary_focus: str
-
-
 # ---------- Stage 5: Validator ----------
 
 
@@ -164,3 +147,27 @@ class ValidationReport(_Base):
         if self.passed and any(i.severity == "critical" for i in self.issues):
             raise ValueError("passed=True but critical issues are present")
         return self
+
+
+# ---------- Holistic Rewriter (new in v2 pipeline) ----------
+
+
+class HolisticExperienceOutput(_Base):
+    intro: str
+    bullets: list[str]
+    skills_line: Optional[str] = None
+
+
+class HolisticRewriteOutput(_Base):
+    """LLM output schema for the single-call holistic rewriter.
+
+    Only carries fields the LLM is allowed to edit. The pipeline merges
+    these into a deep copy of the original Resume; indices, raw_paragraphs,
+    education, header.name, and contact_lines are taken verbatim from the
+    parsed source and never round-trip through the LLM.
+    """
+
+    header_title: Optional[str] = None
+    summary_text: str
+    experience: list[HolisticExperienceOutput]
+    skills_section_categories: dict[str, list[str]]

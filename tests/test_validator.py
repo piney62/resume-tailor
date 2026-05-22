@@ -350,6 +350,107 @@ def test_numbers_match_handles_empty_strings() -> None:
 # ---------- multiple critical issues accumulate ----------
 
 
+# ---------- tier-aware checks (v2 hybrid pipeline) ----------
+
+
+def _three_role_resume() -> Resume:
+    """Build a 3-role resume so tiers are [recent, mid, oldest]."""
+    base = _base_resume()
+    role_mid = Experience(
+        company="Mid Co",
+        title="Engineer",
+        dates="2017 - 2019",
+        location="Remote",
+        intro="Mid intro.",
+        bullets=["Mid bullet 1.", "Mid bullet 2."],
+        skills_line="Skills: Go, Java",
+        indices=ExperienceIndices(header_idxs=[20], intro_idx=21, bullet_idxs=[22, 23], skills_line_idx=24),
+    )
+    role_oldest = Experience(
+        company="Old Co",
+        title="Engineer",
+        dates="2014 - 2016",
+        location="Remote",
+        intro="Old intro.",
+        bullets=["Old bullet 1.", "Old bullet 2."],
+        skills_line="Skills: C, Python",
+        indices=ExperienceIndices(header_idxs=[30], intro_idx=31, bullet_idxs=[32, 33], skills_line_idx=34),
+    )
+    base.experience = [base.experience[0], role_mid, role_oldest]
+    base.raw_paragraphs = [""] * 40
+    return base
+
+
+def test_recent_role_can_grow_bullets_by_up_to_two() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[0].bullets = new.experience[0].bullets + ["new bullet 1", "new bullet 2"]
+    report = validate(orig, new, _jd())
+    assert report.passed is True
+
+
+def test_recent_role_growth_over_two_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[0].bullets = new.experience[0].bullets + ["n1", "n2", "n3"]
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+    assert any(i.section == "experience[0].bullets" for i in report.issues)
+
+
+def test_recent_role_bullet_drop_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[0].bullets = new.experience[0].bullets[:1]  # growth = -1
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+
+
+def test_mid_role_bullet_count_drift_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[1].bullets = new.experience[1].bullets + ["extra bullet"]
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+    assert any(i.section == "experience[1].bullets" for i in report.issues)
+
+
+def test_oldest_role_intro_drift_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[2].intro = "Different intro for oldest."
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+    assert any(i.section == "experience[2].intro" and "verbatim" in i.issue for i in report.issues)
+
+
+def test_oldest_role_bullet_drift_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[2].bullets[0] = "Tampered bullet"
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+    assert any(i.section == "experience[2].bullets" and "verbatim" in i.issue for i in report.issues)
+
+
+def test_oldest_role_skills_line_drift_is_critical() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    new.experience[2].skills_line = "Skills: Tampered"
+    report = validate(orig, new, _jd())
+    assert report.passed is False
+    assert any(i.section == "experience[2].skills_line" for i in report.issues)
+
+
+def test_oldest_role_verbatim_passes() -> None:
+    orig = _three_role_resume()
+    new = deepcopy(orig)
+    # Touch only the recent role; oldest is identical → no drift critical.
+    new.summary.text = "New summary preserving 12 years and 10M users numbers."
+    report = validate(orig, new, _jd())
+    assert report.passed is True
+
+
 def test_multiple_critical_issues_all_reported() -> None:
     orig = _base_resume()
     new = deepcopy(orig)

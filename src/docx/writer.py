@@ -33,9 +33,22 @@ from docx import Document
 
 from src.models.schemas import Experience, Resume
 
+# Style applied to inserted new bullets. Matches what the resume parser
+# expects from a List Paragraph in the source .docx.
+_BULLET_STYLE_NAME = "List Paragraph"
+
 
 def write_resume(source_path: Path | str, rewritten: Resume, output_path: Path | str) -> None:
-    """Open `source_path`, apply edits from `rewritten`, save to `output_path`."""
+    """Open `source_path`, apply edits from `rewritten`, save to `output_path`.
+
+    Order matters:
+      1. All index-based writes go FIRST, using the paragraph list captured
+         from the source. This includes header, summary, every role's
+         intro/existing-bullets/skills_line, and the skills section.
+      2. New-bullet insertions for the recent role go LAST. Inserting earlier
+         would shift downstream paragraph indices and invalidate the writes
+         that follow.
+    """
     doc = Document(str(source_path))
     paragraphs = doc.paragraphs
     raw = rewritten.raw_paragraphs
@@ -45,6 +58,10 @@ def write_resume(source_path: Path | str, rewritten: Resume, output_path: Path |
     for role in rewritten.experience:
         _write_role(paragraphs, role, raw)
     _write_skills_section(paragraphs, rewritten, raw)
+
+    # Insertions last so the index-based writes above always saw the original
+    # paragraph layout.
+    _insert_new_bullets_for_recent(doc, rewritten)
 
     doc.save(str(output_path))
 
@@ -74,16 +91,72 @@ def _write_role(paragraphs, role: Experience, raw: list[str]) -> None:
     if role.indices.intro_idx is not None and role.intro:
         _maybe_set(paragraphs, role.indices.intro_idx, role.intro, raw)
 
-    if len(role.bullets) != len(role.indices.bullet_idxs):
+    # Existing bullets are written by index; any extras beyond the original
+    # bullet_idxs length are handled by _insert_new_bullets_for_recent.
+    n_existing = len(role.indices.bullet_idxs)
+    if len(role.bullets) < n_existing:
         raise ValueError(
             f"bullet count mismatch for role {role.company!r}: "
-            f"{len(role.bullets)} bullets vs {len(role.indices.bullet_idxs)} paragraph indices"
+            f"{len(role.bullets)} bullets vs {n_existing} paragraph indices "
+            f"(rewriter dropped bullets — not supported)"
         )
     for text, idx in zip(role.bullets, role.indices.bullet_idxs):
         _maybe_set(paragraphs, idx, text, raw)
 
     if role.indices.skills_line_idx is not None and role.skills_line is not None:
         _maybe_set(paragraphs, role.indices.skills_line_idx, role.skills_line, raw)
+
+
+def _insert_new_bullets_for_recent(doc, resume: Resume) -> None:
+    """Insert new bullets in the most-recent role if the rewriter added any.
+
+    The new bullets come from `role.bullets[len(role.indices.bullet_idxs):]`
+    — i.e. anything beyond the count captured at parse time. We only allow
+    this for the recent role (index 0); see Validator's tier check.
+
+    Insertion point: immediately BEFORE the paragraph that follows the last
+    existing bullet of the recent role. We prefer the skills_line if present;
+    otherwise the next role's first header paragraph; otherwise append at
+    the end of the document.
+    """
+    if not resume.experience:
+        return
+    recent = resume.experience[0]
+    n_existing = len(recent.indices.bullet_idxs)
+    extras = list(recent.bullets[n_existing:])
+    if not extras:
+        return
+
+    paragraphs = doc.paragraphs
+
+    anchor_idx: int | None = None
+    if recent.indices.skills_line_idx is not None:
+        anchor_idx = recent.indices.skills_line_idx
+    elif len(resume.experience) > 1:
+        next_role = resume.experience[1]
+        if next_role.indices.header_idxs:
+            anchor_idx = next_role.indices.header_idxs[0]
+
+    if anchor_idx is None or anchor_idx >= len(paragraphs):
+        # Fall back: append at the end of the document.
+        for text in extras:
+            p = doc.add_paragraph(text)
+            _try_set_style(p, _BULLET_STYLE_NAME)
+        return
+
+    anchor = paragraphs[anchor_idx]
+    for text in extras:
+        new_para = anchor.insert_paragraph_before(text)
+        _try_set_style(new_para, _BULLET_STYLE_NAME)
+
+
+def _try_set_style(paragraph, style_name: str) -> None:
+    try:
+        paragraph.style = paragraph.part.document.styles[style_name]
+    except KeyError:
+        # Style not in this document; leave default. Word's "Normal" still
+        # renders fine; bullets just won't have the List Paragraph indent.
+        pass
 
 
 def _write_skills_section(paragraphs, resume: Resume, raw: list[str]) -> None:

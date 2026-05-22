@@ -1,5 +1,6 @@
-"""End-to-end pipeline tests. Groq calls are mocked; the real DOCX
-parser and writer run against a synthetic resume file built in tmp_path."""
+"""End-to-end pipeline tests for the v2 hybrid (JD + holistic) flow.
+Groq calls are mocked; the real DOCX parser and writer run against a
+synthetic resume built in tmp_path."""
 
 import json
 from pathlib import Path
@@ -56,14 +57,22 @@ JD_ANALYSIS = {
     "exact_phrases_to_mirror": ["distributed systems at scale"],
 }
 
-SUBSTITUTION_PLAN = {
-    "title_modifier": "Backend Platforms",
-    "substitutions": [
-        {"old": "Redis", "new": "Kafka", "domain": "streaming", "apply_to": ["skills"]}
-    ],
-    "additions_to_skills": ["Real-Time Pipelines"],
-    "summary_focus": "Emphasize distributed systems and streaming",
-}
+
+def _holistic_response(*, intro="Led platform team of 6 engineers focused on backend systems.",
+                       bullet_0="Cut p99 latency from 800ms to 200ms across the request path.",
+                       bullet_1="Mentored 6 engineers, 2 promoted within 12 months.",
+                       extra_bullets: list[str] | None = None) -> dict:
+    bullets = [bullet_0, bullet_1]
+    if extra_bullets:
+        bullets.extend(extra_bullets)
+    return {
+        "header_title": "STAFF ENGINEER, BACKEND PLATFORMS",
+        "summary_text": "Staff engineer with 12 years building backend systems and distributed pipelines.",
+        "experience": [
+            {"intro": intro, "bullets": bullets, "skills_line": "Skills: Python, Kafka, PostgreSQL"},
+        ],
+        "skills_section_categories": {"Languages": ["Python", "Go", "Kafka"]},
+    }
 
 
 def _make_mock_client(responses: list) -> MagicMock:
@@ -76,29 +85,17 @@ def _make_mock_client(responses: list) -> MagicMock:
         "total_completion_tokens": 50, "total_tokens": 150,
         "avg_latency_ms": 200.0, "calls_per_key": {0: len(responses)},
     }
-    client.format_summary.return_value = "  Groq usage — model=test-model\n    calls         : N"
+    client.format_summary.return_value = "  Groq usage — model=test-model\n    calls: N"
     return client
 
 
-# ---------- end-to-end happy path ----------
+# ---------- happy path: exactly 2 LLM calls (JD + holistic) ----------
 
 
 def test_pipeline_runs_end_to_end_with_pdf_skipped(tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
-
-    # Call order for this resume (1 role, 2 bullets):
-    # 1) JD analyze, 2) substitution plan, 3) summary rewrite,
-    # 4) intro rewrite, 5) bullet[0] rewrite, 6) bullet[1] rewrite
-    responses = [
-        JD_ANALYSIS,
-        SUBSTITUTION_PLAN,
-        {"text": "Staff engineer with 12 years on distributed systems at scale."},
-        {"text": "Led an AcmeCorp platform team of 6 engineers focused on distributed systems."},
-        {"text": "Cut p99 latency from 800ms to 200ms across the distributed request path."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},  # verbatim, no change
-    ]
-    client = _make_mock_client(responses)
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
 
     result = run_tailor_pipeline(
         resume_path=resume_path,
@@ -109,21 +106,16 @@ def test_pipeline_runs_end_to_end_with_pdf_skipped(tmp_path: Path) -> None:
     )
 
     assert result.docx_path.exists()
-    assert result.docx_path.suffix == ".docx"
     assert result.pdf_path is None
     assert result.report.passed is True
-    assert client.complete_json.call_count == 6
+    # Exactly 2 LLM calls (JD analyze + holistic rewrite).
+    assert client.complete_json.call_count == 2
 
 
 def test_pipeline_writes_per_stage_json_logs(tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
-    client = _make_mock_client([
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "summary"}, {"text": "intro"},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ])
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
 
     result = run_tailor_pipeline(
         resume_path=resume_path, jd_text="JD text", output_dir=out_dir,
@@ -131,32 +123,24 @@ def test_pipeline_writes_per_stage_json_logs(tmp_path: Path) -> None:
     )
 
     log_files = {p.name for p in result.log_dir.iterdir()}
-    assert "1_jd_analysis.json" in log_files
-    assert "2_resume_parsed.json" in log_files
-    assert "3_substitution_plan.json" in log_files
-    assert "4a_rewritten_initial.json" in log_files
-    assert "5_validation_report.json" in log_files
+    assert "1_resume_parsed.json" in log_files
+    assert "2_jd_analysis.json" in log_files
+    assert "3a_rewritten_initial.json" in log_files
+    assert "4_validation_report.json" in log_files
     assert "groq_usage.json" in log_files
 
-    # Spot-check JSON validity.
-    payload = json.loads((result.log_dir / "1_jd_analysis.json").read_text())
-    assert payload["seniority_level"] == "staff"
+    jd_payload = json.loads((result.log_dir / "2_jd_analysis.json").read_text())
+    assert jd_payload["seniority_level"] == "staff"
 
 
-def test_pipeline_attempts_pdf_when_not_skipped(monkeypatch, mocker, tmp_path: Path) -> None:
+def test_pipeline_attempts_pdf_when_not_skipped(mocker, tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
-    # Stub the PDF exporter so the test doesn't depend on LibreOffice.
     mocker.patch(
         "src.pipeline.export_pdf",
         side_effect=lambda src, dst, **kw: Path(dst).write_bytes(b"%PDF-1.4 fake") or Path(dst),
     )
-    client = _make_mock_client([
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "summary"}, {"text": "intro"},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ])
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
 
     result = run_tailor_pipeline(
         resume_path=resume_path, jd_text="JD", output_dir=out_dir, client=client,
@@ -170,12 +154,7 @@ def test_pipeline_records_pdf_as_none_when_export_fails(mocker, tmp_path: Path) 
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
     mocker.patch("src.pipeline.export_pdf", side_effect=RuntimeError("no backend"))
-    client = _make_mock_client([
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "summary"}, {"text": "intro"},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ])
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
 
     result = run_tailor_pipeline(
         resume_path=resume_path, jd_text="JD", output_dir=out_dir, client=client,
@@ -185,47 +164,38 @@ def test_pipeline_records_pdf_as_none_when_export_fails(mocker, tmp_path: Path) 
     assert result.docx_path.exists()
 
 
-# ---------- regeneration loop ----------
+# ---------- regen loop ----------
 
 
-def test_pipeline_regenerates_when_summary_drops_numbers(tmp_path: Path) -> None:
-    """Force the first summary rewrite to drop a number; the rewriter's
-    own guard reverts it to the original verbatim. With no remaining
-    critical issues, the regen loop should not actually run an LLM call
-    for the second pass. We assert: validation passes after one regen
-    attempt at most."""
+def test_pipeline_regenerates_when_number_dropped(tmp_path: Path) -> None:
+    """Holistic rewriter's own per-field number guard will revert dropped
+    numbers to the original text. The regen loop only kicks in on critical
+    issues the validator detects, which the guard prevents in practice. We
+    still assert the validation passes."""
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
+    # First holistic response drops "12" from summary → per-field guard
+    # reverts to original. No critical issue, no regen needed.
+    response_with_drop = _holistic_response()
+    response_with_drop["summary_text"] = "Staff engineer building backend systems."  # no numbers
 
-    # First summary response drops "12" — guard reverts to original.
-    responses = [
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "Staff engineer building backend systems."},  # numbers dropped
-        {"text": "Led an AcmeCorp platform team of 6 engineers focused on distributed systems."},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ]
-    client = _make_mock_client(responses)
+    client = _make_mock_client([JD_ANALYSIS, response_with_drop])
     result = run_tailor_pipeline(
         resume_path=resume_path, jd_text="JD", output_dir=out_dir, client=client,
         skip_pdf=True, max_regen_passes=2,
     )
-    # Guard preserved original summary; validation passes without regen.
     assert result.report.passed is True
+    # Number-preservation guard kept the original "12 years".
+    assert "12 years" in result.rewritten_resume.summary.text
 
 
-# ---------- groq summary surfaced ----------
+# ---------- progress callback ----------
 
 
 def test_pipeline_progress_callback_emits_monotonic_fractions(tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
-    client = _make_mock_client([
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "summary"}, {"text": "intro"},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ])
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
     events: list[tuple[str, float]] = []
 
     run_tailor_pipeline(
@@ -234,28 +204,24 @@ def test_pipeline_progress_callback_emits_monotonic_fractions(tmp_path: Path) ->
         progress_cb=lambda label, frac: events.append((label, frac)),
     )
 
-    assert events  # at least one event
+    assert events
     fractions = [f for _, f in events]
     assert all(0.0 <= f <= 1.0 for f in fractions)
-    # Final event should be at 1.0.
     assert events[-1][1] == 1.0
-    # Fractions should be non-decreasing.
     assert fractions == sorted(fractions)
+
+
+# ---------- groq summary surfaced ----------
 
 
 def test_pipeline_returns_groq_summary_and_writes_json(tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"
-    client = _make_mock_client([
-        JD_ANALYSIS, SUBSTITUTION_PLAN,
-        {"text": "summary"}, {"text": "intro"},
-        {"text": "Cut p99 latency from 800ms to 200ms."},
-        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
-    ])
+    client = _make_mock_client([JD_ANALYSIS, _holistic_response()])
     result = run_tailor_pipeline(
         resume_path=resume_path, jd_text="JD", output_dir=out_dir, client=client,
         skip_pdf=True,
     )
-    assert result.groq_summary["total_calls"] == 6
+    assert result.groq_summary["total_calls"] == 2
     usage_json = json.loads((result.log_dir / "groq_usage.json").read_text())
-    assert usage_json["total_calls"] == 6
+    assert usage_json["total_calls"] == 2

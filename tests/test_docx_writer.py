@@ -243,10 +243,62 @@ def test_skills_section_surplus_lines_merge_into_last_paragraph(tmp_path: Path) 
     assert "Real-Time Pipelines" in text
 
 
-# ---------- defensive guards ----------
+# ---------- new bullet insertion + defensive guards (v2 hybrid pipeline) ----------
 
 
-def test_bullet_count_mismatch_raises(tmp_path: Path) -> None:
+def test_new_bullets_inserted_before_skills_line(tmp_path: Path) -> None:
+    path = _make_formatted_resume_docx(tmp_path)
+    resume = parse_resume(path)
+    edited = resume.model_copy(deep=True)
+    # Append a new bullet beyond the original bullet_idxs count.
+    edited.experience[0].bullets = edited.experience[0].bullets + ["Built a new Kafka pipeline."]
+    out_path = tmp_path / "new_bullets.docx"
+    write_resume(path, edited, out_path)
+
+    out_doc = Document(str(out_path))
+    src_doc = Document(str(path))
+    # New paragraph added → output count = source + 1.
+    assert len(out_doc.paragraphs) == len(src_doc.paragraphs) + 1
+
+    # The inserted paragraph carries the bullet text.
+    inserted_texts = [p.text for p in out_doc.paragraphs]
+    assert "Built a new Kafka pipeline." in inserted_texts
+
+
+def test_new_bullets_carry_list_paragraph_style(tmp_path: Path) -> None:
+    path = _make_formatted_resume_docx(tmp_path)
+    resume = parse_resume(path)
+    edited = resume.model_copy(deep=True)
+    edited.experience[0].bullets = edited.experience[0].bullets + ["A new JD-aligned achievement."]
+    out_path = tmp_path / "new_bullet_style.docx"
+    write_resume(path, edited, out_path)
+
+    out_doc = Document(str(out_path))
+    for p in out_doc.paragraphs:
+        if p.text == "A new JD-aligned achievement.":
+            assert p.style.name == "List Paragraph"
+            return
+    pytest.fail("inserted bullet not found in output")
+
+
+def test_existing_bullets_unchanged_when_new_bullet_inserted(tmp_path: Path) -> None:
+    path = _make_formatted_resume_docx(tmp_path)
+    resume = parse_resume(path)
+    original_bullets = list(resume.experience[0].bullets)
+
+    edited = resume.model_copy(deep=True)
+    edited.experience[0].bullets = edited.experience[0].bullets + ["Extra bullet text."]
+    out_path = tmp_path / "extra.docx"
+    write_resume(path, edited, out_path)
+
+    # Reparse and confirm original bullets are still there in order.
+    reparsed = parse_resume(out_path)
+    for orig_bullet in original_bullets:
+        assert orig_bullet in reparsed.experience[0].bullets
+
+
+def test_dropping_existing_bullets_still_raises(tmp_path: Path) -> None:
+    """The writer still rejects fewer-bullets-than-indices as a defensive guard."""
     path = _make_formatted_resume_docx(tmp_path)
     resume = parse_resume(path)
     edited = resume.model_copy(deep=True)

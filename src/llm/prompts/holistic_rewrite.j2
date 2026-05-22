@@ -1,0 +1,123 @@
+Rewrite the candidate's resume to align with the target JD using a
+**recency-weighted strategy**.
+
+# TIER STRATEGY (ABSOLUTE)
+
+Each role below carries a [TIER] tag — apply this exact strategy per tier:
+
+- **RECENT** (the candidate's current/most recent role): Inject EVERY JD
+  must-have technology and domain keyword into this role's bullets, intro,
+  and skills line wherever it can fit a real achievement framing. Mirror
+  the JD's exact phrases. You MAY add 1–2 NEW bullets (max) to this role
+  to surface JD must-haves that don't fit existing bullets — append them
+  at the end of the bullets list. This is where the recruiter looks for fit.
+- **MID** (mid-tenure roles): Apply JD signals only when they fit
+  naturally. If the role's existing skills_line lists Redis and the JD
+  wants Kafka (same domain), swap. If the JD wants a wholly new tech that
+  has no analogue in this role, leave it alone.
+- **OLDEST** (the candidate's earliest listed role): COPY EVERY FIELD
+  BYTE-FOR-BYTE FROM THE INPUT. Do not rephrase, do not substitute, do
+  not "improve" anything. This role showcases career breadth.
+
+# JD ANALYSIS
+
+must_have:
+{% for item in jd.must_have %}
+  - {{ item.tech }} ({{ item.category }}) — "{{ item.evidence }}"
+{% else %}
+  (none)
+{% endfor %}
+
+nice_to_have:
+{% for item in jd.nice_to_have %}
+  - {{ item.tech }} ({{ item.category }})
+{% else %}
+  (none)
+{% endfor %}
+
+soft_skills: {{ jd.soft_skills | join(", ") or "(none)" }}
+domain_keywords: {{ jd.domain_keywords | join(", ") or "(none)" }}
+exact_phrases_to_mirror:
+{% for phrase in jd.exact_phrases_to_mirror %}
+  - "{{ phrase }}"
+{% else %}
+  (none)
+{% endfor %}
+seniority_level: {{ jd.seniority_level }}
+
+# CANDIDATE RESUME (current)
+
+header_title: {{ resume.header.title or "(none)" }}
+
+summary:
+"""
+{{ resume.summary.text }}
+"""
+
+experience:
+{% for role in resume.experience %}
+ROLE {{ loop.index0 }} of {{ resume.experience | length }}  [TIER: {{ tiers[loop.index0] | upper }}]
+  company:  {{ role.company }}
+  title:    {{ role.title }}
+  dates:    {{ role.dates }}
+  location: {{ role.location }}
+  intro:    "{{ role.intro }}"
+  bullets:
+  {% for b in role.bullets %}
+    [{{ loop.index0 }}] "{{ b }}"
+  {% endfor %}
+  skills_line: "{{ role.skills_line or "" }}"
+{% endfor %}
+
+skills_section (existing categories):
+{% for cat, items in resume.skills_section.categories.items() %}
+  {{ cat }}: {{ items | join(", ") }}
+{% endfor %}
+
+{% if prior_issues %}
+# PRIOR ATTEMPT VALIDATION FAILED
+
+The previous attempt produced these critical issues. Fix them this time:
+{% for issue in prior_issues %}
+  - {{ issue.section }}: {{ issue.issue }}
+{% endfor %}
+{% endif %}
+
+# HARD RULES (the Validator WILL reject violations)
+
+1. PRESERVE every company name, employment date, degree, field of study,
+   location, and the candidate's seniority word ("Senior", "Staff",
+   "Principal") byte-for-byte from the input.
+2. PRESERVE every number, percentage, year, currency amount, and quantified
+   metric exactly as written. Units stay too ("ms", "rps", "M", "k", "x").
+3. OLDEST tier role: output its intro, every bullet, and its skills_line
+   byte-for-byte from the input. No exceptions.
+4. NEW BULLETS only in the RECENT role, up to 2. They must describe
+   plausible achievements consistent with the candidate's overall trajectory.
+5. NEVER use any banned word: {{ banned_words | join(", ") }}.
+6. header_title may add a comma-separated JD-aligned suffix (e.g.
+   "SENIOR SOFTWARE ENGINEER, BACKEND PLATFORMS") but must contain the
+   original title text as a prefix substring.
+7. Every existing bullet rewrite must stay within ±25% of its original
+   character count.
+
+# OUTPUT — JSON ONLY
+
+Return exactly this shape (no markdown fences, no prose, no commentary):
+
+{
+  "header_title": "<full new title — original text must be a prefix>",
+  "summary_text": "<rewritten summary>",
+  "experience": [
+    {
+      "intro": "<rewritten or verbatim per tier>",
+      "bullets": ["<rewritten bullets in original order>", "<...possibly new bullets if RECENT>"],
+      "skills_line": "<rewritten or verbatim per tier; null if the role had no skills line>"
+    }
+    // ... one entry per input role, in the SAME order
+  ],
+  "skills_section_categories": {
+    "<Category Name>": ["<item>", "<item>"]
+    // include every category from the input; you may add items reflecting JD must-haves
+  }
+}

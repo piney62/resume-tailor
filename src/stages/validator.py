@@ -12,10 +12,16 @@ Severity policy:
   - warning: stylistic violations (banned word introduced). Pipeline
     notes them but does not block.
 
-Skills section content is NOT deep-compared: the Substitution Planner
-intentionally rewrites it, and the Validator is not given the plan, so
-it cannot distinguish a legitimate swap from a violation. We only check
-that no category was DROPPED (growth via "Other" is allowed).
+Tier policy (applied via stages.tiers.classify_tiers):
+  - recent: bullets may grow by up to _MAX_NEW_BULLETS_RECENT; intro and
+    paired bullets are number-guarded; new bullets pass banned-word check only.
+  - mid: bullet count must match; same number + banned-word checks.
+  - oldest: intro, bullets, and skills_line must be byte-identical to
+    the source. Any drift is critical (deterministic enforcement of the
+    contract documented in stages.tiers and stages.holistic_rewriter).
+
+Skills section content is NOT deep-compared: the rewriter intentionally
+rewrites it. We only check that no category was DROPPED (growth allowed).
 """
 
 import re
@@ -28,7 +34,13 @@ from src.models.schemas import (
     ValidationIssue,
     ValidationReport,
 )
+from src.stages.tiers import classify_tiers
 from src.style_rules import BANNED_WORDS
+
+
+# Max NEW bullets the holistic rewriter is allowed to add to the recent role.
+# Matches the hard cap baked into the holistic_rewrite.j2 prompt.
+_MAX_NEW_BULLETS_RECENT = 2
 
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?[%xkMK]?")
@@ -105,7 +117,10 @@ def _check_experience(orig: Resume, new: Resume, issues: list[ValidationIssue]) 
         ))
         return
 
+    tiers = classify_tiers(orig.experience)
+
     for i, (o, n) in enumerate(zip(orig.experience, new.experience)):
+        tier = tiers[i]
         for field in ("company", "title", "dates", "location"):
             if getattr(o, field) != getattr(n, field):
                 issues.append(_critical(
@@ -114,6 +129,28 @@ def _check_experience(orig: Resume, new: Resume, issues: list[ValidationIssue]) 
                     getattr(o, field),
                     getattr(n, field),
                 ))
+
+        # OLDEST tier is contractually verbatim — any drift in editable text is critical.
+        if tier == "oldest":
+            for editable, label in (
+                (o.intro, "intro"),
+                (o.skills_line or "", "skills_line"),
+            ):
+                actual = n.intro if label == "intro" else (n.skills_line or "")
+                if editable != actual:
+                    issues.append(_critical(
+                        f"experience[{i}].{label}",
+                        "oldest role must be verbatim — text drifted from source",
+                        editable, actual,
+                    ))
+            if o.bullets != n.bullets:
+                issues.append(_critical(
+                    f"experience[{i}].bullets",
+                    "oldest role bullets must be verbatim — drifted from source",
+                    " | ".join(o.bullets),
+                    " | ".join(n.bullets),
+                ))
+            continue
 
         if not _numbers_match(o.intro, n.intro):
             issues.append(_critical(
@@ -125,15 +162,31 @@ def _check_experience(orig: Resume, new: Resume, issues: list[ValidationIssue]) 
         for issue in _banned_word_issues(f"experience[{i}].intro", o.intro, n.intro):
             issues.append(issue)
 
-        if len(o.bullets) != len(n.bullets):
-            issues.append(_critical(
-                f"experience[{i}].bullets",
-                f"bullet count changed: {len(o.bullets)} -> {len(n.bullets)}",
-                str(len(o.bullets)),
-                str(len(n.bullets)),
-            ))
-            continue
+        # Bullet count: recent tier allows up to +N_MAX growth; other tiers
+        # must match exactly.
+        growth = len(n.bullets) - len(o.bullets)
+        if tier == "recent":
+            if growth < 0 or growth > _MAX_NEW_BULLETS_RECENT:
+                issues.append(_critical(
+                    f"experience[{i}].bullets",
+                    f"bullet count change out of range for RECENT tier: "
+                    f"{len(o.bullets)} -> {len(n.bullets)} (allowed +0..+{_MAX_NEW_BULLETS_RECENT})",
+                    str(len(o.bullets)),
+                    str(len(n.bullets)),
+                ))
+                continue
+        else:
+            if growth != 0:
+                issues.append(_critical(
+                    f"experience[{i}].bullets",
+                    f"bullet count changed: {len(o.bullets)} -> {len(n.bullets)}",
+                    str(len(o.bullets)),
+                    str(len(n.bullets)),
+                ))
+                continue
 
+        # Compare paired existing bullets only; extras (new bullets in RECENT)
+        # have no original counterpart and are validated only via banned-word.
         for j, (ob, nb) in enumerate(zip(o.bullets, n.bullets)):
             section = f"experience[{i}].bullets[{j}]"
             if not _numbers_match(ob, nb):
@@ -143,6 +196,11 @@ def _check_experience(orig: Resume, new: Resume, issues: list[ValidationIssue]) 
                     ob, nb,
                 ))
             for issue in _banned_word_issues(section, ob, nb):
+                issues.append(issue)
+
+        for j_extra, nb in enumerate(n.bullets[len(o.bullets):]):
+            section = f"experience[{i}].bullets[new+{j_extra}]"
+            for issue in _banned_word_issues(section, "", nb):
                 issues.append(issue)
 
 
