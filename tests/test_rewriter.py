@@ -317,3 +317,32 @@ def test_rewrite_prompt_includes_banned_words_and_few_shot() -> None:
     assert "synergy" in summary_user
     # Few-shot example rendered.
     assert "Example 1" in summary_user
+
+
+# ---------- progress callback ----------
+
+
+def test_progress_callback_emits_one_event_per_llm_call_plus_final() -> None:
+    client = MagicMock()
+    client.complete_json.return_value = {"text": "ok"}
+    events: list[tuple[str, int, int]] = []
+    rewrite_resume(
+        _build_resume(), _plan(), _build_jd(), client,
+        progress_cb=lambda label, done, total: events.append((label, done, total)),
+    )
+    # _build_resume has 1 role with intro + 2 bullets, so total = 1+1+2 = 4
+    # Events: summary, intro, bullet 1, bullet 2, "Rewrite complete" = 5
+    assert len(events) == 5
+    assert events[0][0] == "Rewriting summary"
+    assert events[0][2] == 4
+    assert events[-1] == ("Rewrite complete", 4, 4)
+    # Done counts are monotonically non-decreasing.
+    counts = [e[1] for e in events]
+    assert counts == sorted(counts)
+
+
+def test_progress_callback_optional() -> None:
+    # Omitting the callback must not break anything.
+    client = MagicMock()
+    client.complete_json.return_value = {"text": "ok"}
+    rewrite_resume(_build_resume(), _plan(), _build_jd(), client)  # no progress_cb

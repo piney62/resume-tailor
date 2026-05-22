@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 from src.llm.client import GroqClient
 from src.llm.few_shot import load_examples
@@ -56,27 +56,53 @@ _ADDITIONS_CATEGORY = "Other"
 # =========================================================================
 
 
+ProgressCallback = Callable[[str, int, int], None]
+
+
 def rewrite_resume(
     resume: Resume,
     plan: SubstitutionPlan,
     jd: JDAnalysis,
     client: GroqClient,
+    *,
+    progress_cb: Optional[ProgressCallback] = None,
 ) -> Resume:
+    """Rewrite the resume in spec order. If `progress_cb` is provided it is
+    invoked as `(label, done, total)` before each LLM call so a UI can render
+    a progress bar; `total` is the number of LLM calls scheduled (summary +
+    intros + bullets), `done` is the count completed so far."""
     new = resume.model_copy(deep=True)
-
     new.header.title = _apply_title_modifier(resume.header.title, plan.title_modifier)
+
+    n_intros = sum(1 for r in resume.experience if r.intro)
+    n_bullets = sum(len(r.bullets) for r in resume.experience)
+    total_calls = 1 + n_intros + n_bullets  # summary + each intro + each bullet
+    done = 0
+
+    def emit(label: str) -> None:
+        if progress_cb is not None:
+            progress_cb(label, done, total_calls)
+
+    emit("Rewriting summary")
     new.summary.text = _rewrite_summary(resume.summary.text, plan, jd, client)
+    done += 1
 
     for i, role in enumerate(resume.experience):
         if role.intro:
+            emit(f"Rewriting intro: {role.company}")
             new.experience[i].intro = _rewrite_intro(role, plan, jd, client)
-        new.experience[i].bullets = [
-            _rewrite_bullet(b, role, plan, jd, client) for b in role.bullets
-        ]
+            done += 1
+        new_bullets: list[str] = []
+        for j, b in enumerate(role.bullets):
+            emit(f"Rewriting bullet {j + 1}/{len(role.bullets)}: {role.company}")
+            new_bullets.append(_rewrite_bullet(b, role, plan, jd, client))
+            done += 1
+        new.experience[i].bullets = new_bullets
         if role.skills_line is not None:
             new.experience[i].skills_line = _apply_subs_to_skills_line(role.skills_line, plan)
 
     new.skills_section = _rewrite_skills_section(resume.skills_section, plan)
+    emit("Rewrite complete")
     return new
 
 

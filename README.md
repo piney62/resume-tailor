@@ -36,6 +36,29 @@ Put your source resume in `profiles/<your-name>/your-resume.docx`. The filename 
 
 Place job descriptions under `jd-archive/` as plain text or markdown.
 
+## Web UI (Streamlit)
+
+For an interactive workflow with progress display, validation summary, and a
+diff preview:
+
+```powershell
+streamlit run src/ui/streamlit_app.py
+```
+
+The browser opens at http://localhost:8501. Features:
+
+- Pick a profile from `profiles/` **or** upload a new `.docx`.
+- Pick a JD from `jd-archive/` **or** paste raw text.
+- Live progress bar that ticks per LLM call (`Rewriting bullet 4/9: Google…`).
+- Validation status badge with critical/warning counts and per-issue diffs.
+- Download buttons for the tailored `.docx` and `.pdf`.
+- Expandable panels for the JD analysis, substitution plan, Groq token
+  usage, and a temporary inline diff (delete once rewrite quality is
+  verified).
+
+Sidebar options mirror the CLI: API keys, model, max regen passes,
+skip-PDF, PDF backend.
+
 ## Usage
 
 ### Tailor a resume to a JD
@@ -157,6 +180,8 @@ src/
   main.py             — typer CLI (tailor / analyze-jd / validate / backends)
   pipeline.py         — orchestration + section-level regeneration loop
   style_rules.py      — BANNED_WORDS shared by rewriter and validator
+  ui/
+    streamlit_app.py  — Streamlit web UI
   stages/
     jd_analyzer.py
     resume_parser.py

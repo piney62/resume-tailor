@@ -217,6 +217,32 @@ def test_pipeline_regenerates_when_summary_drops_numbers(tmp_path: Path) -> None
 # ---------- groq summary surfaced ----------
 
 
+def test_pipeline_progress_callback_emits_monotonic_fractions(tmp_path: Path) -> None:
+    resume_path = _make_synthetic_resume(tmp_path)
+    out_dir = tmp_path / "out"
+    client = _make_mock_client([
+        JD_ANALYSIS, SUBSTITUTION_PLAN,
+        {"text": "summary"}, {"text": "intro"},
+        {"text": "Cut p99 latency from 800ms to 200ms."},
+        {"text": "Mentored 6 engineers, 2 promoted within 12 months."},
+    ])
+    events: list[tuple[str, float]] = []
+
+    run_tailor_pipeline(
+        resume_path=resume_path, jd_text="JD", output_dir=out_dir,
+        client=client, skip_pdf=True,
+        progress_cb=lambda label, frac: events.append((label, frac)),
+    )
+
+    assert events  # at least one event
+    fractions = [f for _, f in events]
+    assert all(0.0 <= f <= 1.0 for f in fractions)
+    # Final event should be at 1.0.
+    assert events[-1][1] == 1.0
+    # Fractions should be non-decreasing.
+    assert fractions == sorted(fractions)
+
+
 def test_pipeline_returns_groq_summary_and_writes_json(tmp_path: Path) -> None:
     resume_path = _make_synthetic_resume(tmp_path)
     out_dir = tmp_path / "out"

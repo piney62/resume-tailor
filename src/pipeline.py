@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.docx.pdf_export import export_pdf
 from src.docx.writer import write_resume
@@ -52,6 +52,14 @@ class TailorResult:
     report: ValidationReport
     log_dir: Path
     groq_summary: dict
+    # Snapshots used by the UI's diff view; kept here so the caller does not
+    # have to re-parse the source after the pipeline completes.
+    original_resume: Optional[Any] = None
+    rewritten_resume: Optional[Any] = None
+
+
+# Callback signature surfaced to UIs: (label, fraction_complete_0_to_1).
+PipelineProgressCallback = Callable[[str, float], None]
 
 
 def run_tailor_pipeline(
@@ -63,27 +71,42 @@ def run_tailor_pipeline(
     pdf_backend: str = "auto",
     skip_pdf: bool = False,
     max_regen_passes: int = 2,
+    progress_cb: Optional[PipelineProgressCallback] = None,
 ) -> TailorResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = output_dir / "logs" / datetime.now().strftime("%Y%m%d-%H%M%S")
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    def emit(label: str, frac: float) -> None:
+        if progress_cb is not None:
+            progress_cb(label, frac)
+
+    emit("Analyzing JD…", 0.02)
     logger.info("[1/6] analyzing JD")
     jd = analyze_jd(jd_text, client)
     _dump_json(log_dir / "1_jd_analysis.json", jd)
 
+    emit("Parsing resume…", 0.10)
     logger.info("[2/6] parsing resume")
     resume = parse_resume(resume_path)
     _dump_json(log_dir / "2_resume_parsed.json", resume)
 
+    emit("Planning substitutions…", 0.15)
     logger.info("[3/6] planning substitutions")
     plan = plan_substitutions(jd, resume, client)
     _dump_json(log_dir / "3_substitution_plan.json", plan)
 
+    # Rewriter occupies the largest share of wall time; map its
+    # (done, total) calls into the 0.20..0.85 slice of the overall bar.
+    def _rewriter_progress(label: str, done: int, total: int) -> None:
+        frac_local = done / max(total, 1)
+        emit(label, 0.20 + 0.65 * frac_local)
+
     logger.info("[4/6] rewriting (initial pass)")
-    rewritten = rewrite_resume(resume, plan, jd, client)
+    rewritten = rewrite_resume(resume, plan, jd, client, progress_cb=_rewriter_progress)
     _dump_json(log_dir / "4a_rewritten_initial.json", rewritten)
 
+    emit("Validating…", 0.88)
     logger.info("[5/6] validating")
     report = validate(resume, rewritten, jd)
     for attempt in range(1, max_regen_passes + 1):
@@ -108,12 +131,14 @@ def run_tailor_pipeline(
             max_regen_passes,
         )
 
+    emit("Writing DOCX…", 0.92)
     logger.info("[6/6] writing DOCX")
     docx_out = output_dir / f"{resume_path.stem} (tailored).docx"
     write_resume(resume_path, rewritten, docx_out)
 
     pdf_out: Optional[Path] = None
     if not skip_pdf:
+        emit("Exporting PDF…", 0.96)
         pdf_out = docx_out.with_suffix(".pdf")
         try:
             export_pdf(docx_out, pdf_out, backend=pdf_backend)  # type: ignore[arg-type]
@@ -127,12 +152,15 @@ def run_tailor_pipeline(
         json.dumps(groq_summary, indent=2), encoding="utf-8"
     )
 
+    emit("Done", 1.0)
     return TailorResult(
         docx_path=docx_out,
         pdf_path=pdf_out,
         report=report,
         log_dir=log_dir,
         groq_summary=groq_summary,
+        original_resume=resume,
+        rewritten_resume=rewritten,
     )
 
 
