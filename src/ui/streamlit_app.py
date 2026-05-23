@@ -84,12 +84,25 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
 
 def _show_pdf_inline(pdf_path: Path, height: int = 900) -> None:
     b64 = base64.b64encode(pdf_path.read_bytes()).decode()
-    st.components.v1.html(
-        f'<iframe src="data:application/pdf;base64,{b64}" '
-        f'width="100%" height="{height}px" style="border:none;border-radius:6px;"></iframe>',
-        height=height + 10,
-        scrolling=False,
-    )
+    # Chrome blocks data: URIs for PDFs inside iframes.
+    # Using a JavaScript Blob URL (same-origin to the component iframe) works.
+    html = f"""<!DOCTYPE html>
+<html>
+<head><style>*{{margin:0;padding:0;}}body{{background:#525659;}}</style></head>
+<body>
+<embed id="pdf" type="application/pdf" width="100%" height="{height}px" style="border:none;">
+<script>
+(function(){{
+  var raw = atob('{b64}');
+  var buf = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  var blob = new Blob([buf], {{type:'application/pdf'}});
+  document.getElementById('pdf').src = URL.createObjectURL(blob);
+}})();
+</script>
+</body>
+</html>"""
+    st.components.v1.html(html, height=height + 10, scrolling=False)
 
 
 def _build_client() -> GroqClient:
