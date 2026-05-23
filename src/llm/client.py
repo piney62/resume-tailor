@@ -220,14 +220,26 @@ class GroqClient:
             logger.info("all %d keys saturated at rpm=%d; sleeping %.2fs", n, self._rpm, wait)
             self._sleep(wait)
 
+    # If Retry-After exceeds this, the key's quota is exhausted — raise immediately
+    # rather than sleeping for hours.
+    _MAX_RETRY_SLEEP = 30.0
+
     def _retry_wait(self, err: Exception, attempt: int) -> float:
-        # Honor server-provided Retry-After when available.
         resp = getattr(err, "response", None)
         if resp is not None:
             try:
                 ra = resp.headers.get("retry-after")
                 if ra:
-                    return float(ra)
+                    server_wait = float(ra)
+                    if server_wait > self._MAX_RETRY_SLEEP:
+                        raise RuntimeError(
+                            f"Groq API key is rate-limited for {server_wait:.0f}s "
+                            f"(~{server_wait / 3600:.1f}h) — quota likely exhausted. "
+                            "Add another API key in the sidebar or wait until the quota resets."
+                        ) from err
+                    return server_wait
+            except RuntimeError:
+                raise
             except (AttributeError, ValueError, TypeError):
                 pass
         # Exponential backoff capped at 60s.
