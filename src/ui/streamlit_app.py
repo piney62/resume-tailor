@@ -102,7 +102,8 @@ def _show_pdf_inline(pdf_path: Path, height: int = 920) -> None:
             old.unlink(missing_ok=True)
         shutil.copy2(pdf_path, dest)
 
-    src_url = f"/app/static/{dest_name}"
+    # navpanes=0 hides the thumbnail sidebar; view=FitH fits page to full width.
+    src_url = f"/app/static/{dest_name}#navpanes=0&view=FitH"
     st.markdown(
         f'<iframe src="{src_url}" width="100%" height="{height}px" '
         f'style="border:none;border-radius:6px;"></iframe>',
