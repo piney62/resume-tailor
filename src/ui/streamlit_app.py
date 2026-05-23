@@ -9,6 +9,7 @@ Layout: left column = inputs + results panel, right column = live PDF preview.
 import difflib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from datetime import datetime
@@ -81,19 +82,32 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
     )
 
 
-def _show_pdf_inline(pdf_path: Path) -> None:
-    """Render each PDF page as a PNG image via PyMuPDF and display with st.image.
+# Static directory next to this script — served by Streamlit at /app/static/.
+_STATIC_DIR = Path(__file__).parent / "static"
 
-    This avoids all browser PDF-embedding restrictions (Chrome blocks both
-    data: URIs and blob: URLs inside Streamlit's sandboxed iframe).
+
+def _show_pdf_inline(pdf_path: Path, height: int = 920) -> None:
+    """Display the PDF using Streamlit's static file server + an iframe.
+
+    Streamlit serves files in src/ui/static/ at /app/static/<name>.
+    A real HTTP URL in a non-sandboxed st.markdown iframe lets Chrome's
+    built-in PDF viewer render the file normally.
     """
-    import fitz  # pymupdf
+    # Copy PDF to static dir with a mtime-based name to bust browser cache.
+    dest_name = f"preview_{pdf_path.stat().st_mtime_ns}.pdf"
+    dest = _STATIC_DIR / dest_name
+    if not dest.exists():
+        # Remove stale preview files first.
+        for old in _STATIC_DIR.glob("preview_*.pdf"):
+            old.unlink(missing_ok=True)
+        shutil.copy2(pdf_path, dest)
 
-    doc = fitz.open(str(pdf_path))
-    mat = fitz.Matrix(1.8, 1.8)  # zoom for readability (~130 dpi → ~234 dpi)
-    for page in doc:
-        pix = page.get_pixmap(matrix=mat)
-        st.image(pix.tobytes("png"), use_container_width=True)
+    src_url = f"/app/static/{dest_name}"
+    st.markdown(
+        f'<iframe src="{src_url}" width="100%" height="{height}px" '
+        f'style="border:none;border-radius:6px;"></iframe>',
+        unsafe_allow_html=True,
+    )
 
 
 def _build_client() -> GroqClient:
@@ -368,7 +382,7 @@ with right_col:
     st.subheader("PDF Preview")
 
     if pdf_ready:
-        _show_pdf_inline(Path(result.pdf_path))
+        _show_pdf_inline(Path(result.pdf_path), height=920)
     else:
         st.markdown(
             "<div style='"
