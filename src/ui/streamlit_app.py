@@ -3,7 +3,9 @@
 Run with:
     streamlit run src/ui/streamlit_app.py
 
-Layout: compact left panel (inputs + results) | right panel (live PDF preview).
+Layout:
+  Left  — title + compact inputs + results
+  Right — PDF viewer from the very top of the page
 """
 
 import difflib
@@ -29,6 +31,8 @@ from src.pipeline import run_tailor_pipeline
 load_dotenv(_ROOT / ".env")
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+
 
 # =========================================================================
 # Helpers
@@ -47,7 +51,7 @@ def _resume_to_text(resume: Resume) -> str:
     lines.append(resume.summary.text)
     lines.append("")
     for i, role in enumerate(resume.experience):
-        lines.append(f"--- EXPERIENCE #{i + 1}: {role.company} | {role.title} ---")
+        lines.append(f"--- EXPERIENCE #{i+1}: {role.company} | {role.title} ---")
         lines.append(f"  dates:    {role.dates}")
         lines.append(f"  location: {role.location}")
         if role.intro:
@@ -82,13 +86,19 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
     )
 
 
-def _show_pdf_inline(pdf_path: Path, height: int = 860) -> None:
+def _static_pdf_url(pdf_path: Path) -> str:
+    """Copy PDF to the static dir (cache-busted) and return its /app/static/ URL."""
     dest_name = f"preview_{pdf_path.stat().st_mtime_ns}.pdf"
     dest = _STATIC_DIR / dest_name
     if not dest.exists():
         for old in _STATIC_DIR.glob("preview_*.pdf"):
             old.unlink(missing_ok=True)
         shutil.copy2(pdf_path, dest)
+    return dest_name
+
+
+def _show_pdf_inline(pdf_path: Path, height: int = 900) -> None:
+    dest_name = _static_pdf_url(pdf_path)
     src_url = f"/app/static/{dest_name}#navpanes=0&view=FitH"
     st.markdown(
         f'<iframe src="{src_url}" width="100%" height="{height}px" '
@@ -97,9 +107,26 @@ def _show_pdf_inline(pdf_path: Path, height: int = 860) -> None:
     )
 
 
-def _section(label: str) -> None:
-    st.markdown(f"<p style='font-weight:600;margin:10px 0 4px 0;'>{label}</p>",
-                unsafe_allow_html=True)
+def _auto_download(pdf_path: Path, filename: str, result_key: str) -> None:
+    """Trigger a one-shot browser download via an injected anchor + script."""
+    if st.session_state.get("last_auto_dl") == result_key:
+        return
+    st.session_state.last_auto_dl = result_key
+    dest_name = _static_pdf_url(pdf_path)
+    safe_filename = filename.replace('"', "")
+    st.markdown(
+        f'<a id="_adl" href="/app/static/{dest_name}" '
+        f'download="{safe_filename}" style="display:none">dl</a>'
+        f'<script>document.getElementById("_adl").click();</script>',
+        unsafe_allow_html=True,
+    )
+
+
+def _label(text: str) -> None:
+    st.markdown(
+        f"<p style='font-weight:600;margin:10px 0 3px 0;font-size:0.9rem'>{text}</p>",
+        unsafe_allow_html=True,
+    )
 
 
 def _build_client(api_keys: str, model: str) -> GroqClient:
@@ -108,10 +135,21 @@ def _build_client(api_keys: str, model: str) -> GroqClient:
 
 
 # =========================================================================
-# Page config + sidebar
+# Page config
 # =========================================================================
 
 st.set_page_config(page_title="Resume Tailor", layout="wide")
+
+# Reduce default top padding so the right-column PDF viewer sits higher.
+st.markdown(
+    "<style>div[data-testid='stAppViewContainer'] > section > div:first-child"
+    "{padding-top:1rem}</style>",
+    unsafe_allow_html=True,
+)
+
+# =========================================================================
+# Sidebar
+# =========================================================================
 
 with st.sidebar:
     st.header("Groq")
@@ -126,34 +164,43 @@ with st.sidebar:
         "Model",
         value=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     )
+
     st.divider()
     st.header("Pipeline")
     max_regen = st.slider("Max regen passes", 0, 3, 2)
     skip_pdf = st.checkbox("Skip PDF export", value=False)
     pdf_backend = st.selectbox("PDF backend", ["auto", "docx2pdf", "libreoffice"], index=0)
 
+    st.divider()
+    st.header("Output")
+    auto_download = st.checkbox(
+        "Auto-download PDF after tailoring",
+        value=False,
+        help="Automatically saves the PDF to your Downloads folder when the pipeline finishes.",
+    )
+
 
 # =========================================================================
-# Title
+# Two-column layout (no top-level title — it lives inside the left column)
 # =========================================================================
-
-st.markdown(
-    "<h2 style='margin-bottom:0'>Resume Tailor</h2>"
-    "<p style='color:#888;margin-top:2px;font-size:0.85rem;'>"
-    "Numbers, company names, and dates are always preserved.</p>",
-    unsafe_allow_html=True,
-)
 
 left_col, right_col = st.columns([1, 1], gap="large")
 
 # =========================================================================
-# LEFT — inputs + results
+# LEFT — title + inputs + results
 # =========================================================================
 
 with left_col:
 
+    st.markdown(
+        "<h2 style='margin:0 0 2px 0'>Resume Tailor</h2>"
+        "<p style='color:#888;margin:0 0 12px 0;font-size:0.82rem'>"
+        "Numbers, company names, and dates are always preserved.</p>",
+        unsafe_allow_html=True,
+    )
+
     # ── Resume ───────────────────────────────────────────────────────────
-    _section("Resume")
+    _label("Resume")
 
     profiles_dir = _ROOT / "profiles"
     existing_profiles = sorted(
@@ -164,9 +211,7 @@ with left_col:
     r_src_col, r_pick_col = st.columns([1, 2])
     with r_src_col:
         resume_source = st.radio(
-            "resume_source",
-            ["Profile", "Upload"],
-            horizontal=False,
+            "_rs", ["Profile", "Upload"],
             label_visibility="collapsed",
             disabled=not existing_profiles,
             index=0 if existing_profiles else 1,
@@ -175,15 +220,15 @@ with left_col:
         resume_path: Path | None = None
         profile_name: str | None = None
         if resume_source == "Profile" and existing_profiles:
-            profile_name = st.selectbox("profile", existing_profiles,
+            profile_name = st.selectbox("_prof", existing_profiles,
                                         label_visibility="collapsed")
-            candidates = sorted((profiles_dir / profile_name).glob("*.docx"))
-            candidates = [c for c in candidates if not c.name.startswith("~$")]
+            candidates = [c for c in sorted((profiles_dir / profile_name).glob("*.docx"))
+                          if not c.name.startswith("~$")]
             if candidates:
                 resume_path = candidates[0]
                 st.caption(f"`{resume_path.name}` · {resume_path.stat().st_size // 1024} KB")
         else:
-            uploaded = st.file_uploader("upload", type=["docx"],
+            uploaded = st.file_uploader("_up", type=["docx"],
                                         label_visibility="collapsed")
             if uploaded is not None:
                 if st.session_state.get("uploaded_name") != uploaded.name:
@@ -196,18 +241,16 @@ with left_col:
                 profile_name = Path(uploaded.name).stem
                 st.caption(f"`{uploaded.name}` · {len(uploaded.getvalue()) // 1024} KB")
 
-    # ── Target job ────────────────────────────────────────────────────────
-    _section("Target job (for your records)")
+    # ── Target job (for records) ──────────────────────────────────────────
+    _label("Target job (for your records)")
     j_co, j_role = st.columns(2)
     with j_co:
-        company_name = st.text_input("Company", placeholder="e.g. Google",
-                                     label_visibility="visible")
+        company_name = st.text_input("Company", placeholder="e.g. Google")
     with j_role:
-        role_name = st.text_input("Role", placeholder="e.g. Senior Engineer",
-                                  label_visibility="visible")
+        role_name = st.text_input("Role", placeholder="e.g. Senior Engineer")
 
     # ── Job description ───────────────────────────────────────────────────
-    _section("Job description")
+    _label("Job description")
 
     jd_archive_dir = _ROOT / "jd-archive"
     existing_jds = sorted(
@@ -216,8 +259,7 @@ with left_col:
     ) if jd_archive_dir.exists() else []
 
     jd_source = st.radio(
-        "jd_source",
-        ["jd-archive/", "Paste text"],
+        "_jds", ["jd-archive/", "Paste text"],
         horizontal=True,
         label_visibility="collapsed",
         disabled=not existing_jds,
@@ -226,24 +268,31 @@ with left_col:
 
     jd_text: str = ""
     if jd_source == "jd-archive/" and existing_jds:
-        selected_jd = st.selectbox("JD file", [p.name for p in existing_jds],
+        selected_jd = st.selectbox("_jdf", [p.name for p in existing_jds],
                                    label_visibility="collapsed")
-        jd_path = jd_archive_dir / selected_jd
-        jd_text = jd_path.read_text(encoding="utf-8")
+        jd_text = (jd_archive_dir / selected_jd).read_text(encoding="utf-8")
         with st.expander("Preview"):
             st.markdown(jd_text)
     else:
         jd_text = st.text_area(
-            "jd_paste", height=180,
+            "_jdp", height=175,
             placeholder="Paste the job description here…",
             label_visibility="collapsed",
         )
 
-    # ── Action row ────────────────────────────────────────────────────────
-    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+    # ── Action row (Tailor | ↓ docx | ↓ pdf) ─────────────────────────────
+    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
     run_disabled = not (resume_path and api_keys.strip())
 
     result = st.session_state.get("result")
+
+    # Derive resume owner name for download filename
+    resume_owner = ""
+    if result and result.original_resume:
+        resume_owner = result.original_resume.header.name
+    elif profile_name:
+        resume_owner = profile_name
+    dl_stem = f"{resume_owner} resume".strip() if resume_owner else "resume"
 
     act_col, docx_col, pdf_col = st.columns([3, 2, 2])
     with act_col:
@@ -255,11 +304,10 @@ with left_col:
                        disabled=run_disabled, use_container_width=True)
     with docx_col:
         if result and result.docx_path and Path(result.docx_path).exists():
-            dl_name = f"{company_name or 'resume'} {role_name or ''}".strip() + ".docx"
             st.download_button(
                 "↓ .docx",
                 data=Path(result.docx_path).read_bytes(),
-                file_name=dl_name,
+                file_name=f"{dl_stem}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
@@ -267,11 +315,10 @@ with left_col:
             st.button("↓ .docx", disabled=True, use_container_width=True)
     with pdf_col:
         if result and result.pdf_path and Path(result.pdf_path).exists():
-            dl_name = f"{company_name or 'resume'} {role_name or ''}".strip() + ".pdf"
             st.download_button(
                 "↓ .pdf",
                 data=Path(result.pdf_path).read_bytes(),
-                file_name=dl_name,
+                file_name=f"{dl_stem}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
             )
@@ -310,6 +357,19 @@ with left_col:
             st.session_state.result = None
             st.exception(e)
 
+    # ── Auto-download ─────────────────────────────────────────────────────
+    if (
+        auto_download
+        and result is not None
+        and result.pdf_path
+        and Path(result.pdf_path).exists()
+    ):
+        _auto_download(
+            Path(result.pdf_path),
+            f"{dl_stem}.pdf",
+            result_key=str(result.log_dir),
+        )
+
     # ── Results summary ───────────────────────────────────────────────────
     if result is not None:
         st.divider()
@@ -319,12 +379,11 @@ with left_col:
         n_critical = sum(1 for i in report.issues if i.severity == "critical")
         n_warnings = sum(1 for i in report.issues if i.severity == "warning")
 
-        target_label = ""
-        if company_name or role_name:
-            target_label = f" · {company_name} {role_name}".strip()
+        target = f" · {company_name}" if company_name else ""
+        target += f" {role_name}" if role_name else ""
 
         st.markdown(
-            f"{color}[**{badge}**]{target_label} · "
+            f"{color}[**{badge}**]{target} · "
             f"{n_critical} critical, {n_warnings} warnings · "
             f"keyword match **{report.keyword_match_rate:.0%}**"
         )
@@ -365,8 +424,9 @@ with left_col:
         with st.expander("Groq usage"):
             st.json(result.groq_summary)
 
+
 # =========================================================================
-# RIGHT — PDF preview
+# RIGHT — PDF viewer (no title, starts from top)
 # =========================================================================
 
 with right_col:
@@ -377,20 +437,16 @@ with right_col:
         and Path(result.pdf_path).exists()
     )
 
-    st.markdown(
-        "<p style='font-weight:600;font-size:1.1rem;margin-bottom:6px'>PDF Preview</p>",
-        unsafe_allow_html=True,
-    )
-
     if pdf_ready:
-        _show_pdf_inline(Path(result.pdf_path), height=860)
+        _show_pdf_inline(Path(result.pdf_path), height=900)
     else:
         st.markdown(
             "<div style='"
-            "height:500px;"
+            "height:600px;"
             "display:flex;align-items:center;justify-content:center;"
             "border:2px dashed #555;border-radius:10px;"
             "color:#777;font-size:0.95rem;"
+            "margin-top:52px;"
             "'>PDF preview appears here after running</div>",
             unsafe_allow_html=True,
         )
