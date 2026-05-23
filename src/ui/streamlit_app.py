@@ -224,7 +224,7 @@ with left_col:
         ["Pick from jd-archive/", "Paste text"],
         horizontal=True,
         disabled=not existing_jds,
-        index=0 if existing_jds else 1,
+        index=1,  # default to "Paste text"
     )
 
     jd_text: str = ""
@@ -241,18 +241,19 @@ with left_col:
 
     # --- Run button ---
     st.divider()
-    run_disabled = not (resume_path and jd_text.strip() and api_keys.strip())
+    run_disabled = not (resume_path and api_keys.strip())
     if not api_keys.strip():
         st.warning("Set Groq API keys in the sidebar (or in `.env`).")
     elif not resume_path:
         st.info("Pick or upload a resume above to enable the Tailor button.")
-    elif not jd_text.strip():
-        st.info("Add a JD above to enable the Tailor button.")
 
     go = st.button("Tailor my resume", type="primary", disabled=run_disabled)
 
     # --- Pipeline run ---
     if go and resume_path:
+        if not jd_text.strip():
+            st.error("Please paste a job description before running.")
+            st.stop()
         output_dir = _ROOT / "outputs" / "_ui" / datetime.now().strftime("%Y%m%d-%H%M%S")
         progress_bar = st.progress(0.0, text="Starting…")
 
