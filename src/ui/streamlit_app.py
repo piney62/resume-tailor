@@ -6,7 +6,6 @@ Run with:
 Layout: left column = inputs + results panel, right column = live PDF preview.
 """
 
-import base64
 import difflib
 import json
 import os
@@ -82,27 +81,19 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
     )
 
 
-def _show_pdf_inline(pdf_path: Path, height: int = 900) -> None:
-    b64 = base64.b64encode(pdf_path.read_bytes()).decode()
-    # Chrome blocks data: URIs for PDFs inside iframes.
-    # Using a JavaScript Blob URL (same-origin to the component iframe) works.
-    html = f"""<!DOCTYPE html>
-<html>
-<head><style>*{{margin:0;padding:0;}}body{{background:#525659;}}</style></head>
-<body>
-<embed id="pdf" type="application/pdf" width="100%" height="{height}px" style="border:none;">
-<script>
-(function(){{
-  var raw = atob('{b64}');
-  var buf = new Uint8Array(raw.length);
-  for (var i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
-  var blob = new Blob([buf], {{type:'application/pdf'}});
-  document.getElementById('pdf').src = URL.createObjectURL(blob);
-}})();
-</script>
-</body>
-</html>"""
-    st.components.v1.html(html, height=height + 10, scrolling=False)
+def _show_pdf_inline(pdf_path: Path) -> None:
+    """Render each PDF page as a PNG image via PyMuPDF and display with st.image.
+
+    This avoids all browser PDF-embedding restrictions (Chrome blocks both
+    data: URIs and blob: URLs inside Streamlit's sandboxed iframe).
+    """
+    import fitz  # pymupdf
+
+    doc = fitz.open(str(pdf_path))
+    mat = fitz.Matrix(1.8, 1.8)  # zoom for readability (~130 dpi → ~234 dpi)
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        st.image(pix.tobytes("png"), use_container_width=True)
 
 
 def _build_client() -> GroqClient:
@@ -377,7 +368,7 @@ with right_col:
     st.subheader("PDF Preview")
 
     if pdf_ready:
-        _show_pdf_inline(Path(result.pdf_path), height=920)
+        _show_pdf_inline(Path(result.pdf_path))
     else:
         st.markdown(
             "<div style='"
