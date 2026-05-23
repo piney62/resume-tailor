@@ -3,7 +3,7 @@
 Run with:
     streamlit run src/ui/streamlit_app.py
 
-Layout: left column = inputs + results panel, right column = live PDF preview.
+Layout: compact left panel (inputs + results) | right panel (live PDF preview).
 """
 
 import difflib
@@ -15,7 +15,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-# Make the project root importable when streamlit is launched from any cwd.
 _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -29,6 +28,7 @@ from src.pipeline import run_tailor_pipeline
 
 load_dotenv(_ROOT / ".env")
 
+_STATIC_DIR = Path(__file__).parent / "static"
 
 # =========================================================================
 # Helpers
@@ -82,27 +82,13 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
     )
 
 
-# Static directory next to this script — served by Streamlit at /app/static/.
-_STATIC_DIR = Path(__file__).parent / "static"
-
-
-def _show_pdf_inline(pdf_path: Path, height: int = 920) -> None:
-    """Display the PDF using Streamlit's static file server + an iframe.
-
-    Streamlit serves files in src/ui/static/ at /app/static/<name>.
-    A real HTTP URL in a non-sandboxed st.markdown iframe lets Chrome's
-    built-in PDF viewer render the file normally.
-    """
-    # Copy PDF to static dir with a mtime-based name to bust browser cache.
+def _show_pdf_inline(pdf_path: Path, height: int = 860) -> None:
     dest_name = f"preview_{pdf_path.stat().st_mtime_ns}.pdf"
     dest = _STATIC_DIR / dest_name
     if not dest.exists():
-        # Remove stale preview files first.
         for old in _STATIC_DIR.glob("preview_*.pdf"):
             old.unlink(missing_ok=True)
         shutil.copy2(pdf_path, dest)
-
-    # navpanes=0 hides the thumbnail sidebar; view=FitH fits page to full width.
     src_url = f"/app/static/{dest_name}#navpanes=0&view=FitH"
     st.markdown(
         f'<iframe src="{src_url}" width="100%" height="{height}px" '
@@ -111,7 +97,12 @@ def _show_pdf_inline(pdf_path: Path, height: int = 920) -> None:
     )
 
 
-def _build_client() -> GroqClient:
+def _section(label: str) -> None:
+    st.markdown(f"<p style='font-weight:600;margin:10px 0 4px 0;'>{label}</p>",
+                unsafe_allow_html=True)
+
+
+def _build_client(api_keys: str, model: str) -> GroqClient:
     keys = [k.strip() for k in api_keys.split(",") if k.strip()]
     return GroqClient(api_keys=keys, model=model)
 
@@ -146,18 +137,14 @@ with st.sidebar:
 # Title
 # =========================================================================
 
-st.title("Resume Tailor")
-st.caption(
-    "Tailor a .docx resume to a JD with a multi-stage pipeline. "
-    "Numbers, company names, and dates are preserved."
+st.markdown(
+    "<h2 style='margin-bottom:0'>Resume Tailor</h2>"
+    "<p style='color:#888;margin-top:2px;font-size:0.85rem;'>"
+    "Numbers, company names, and dates are always preserved.</p>",
+    unsafe_allow_html=True,
 )
 
-# =========================================================================
-# Two-column layout
-# =========================================================================
-
 left_col, right_col = st.columns([1, 1], gap="large")
-
 
 # =========================================================================
 # LEFT — inputs + results
@@ -165,8 +152,8 @@ left_col, right_col = st.columns([1, 1], gap="large")
 
 with left_col:
 
-    # --- Step 1: Resume source ---
-    st.subheader("1. Resume")
+    # ── Resume ───────────────────────────────────────────────────────────
+    _section("Resume")
 
     profiles_dir = _ROOT / "profiles"
     existing_profiles = sorted(
@@ -174,44 +161,53 @@ with left_col:
         if p.is_dir() and any(p.glob("*.docx"))
     ) if profiles_dir.exists() else []
 
-    resume_source = st.radio(
-        "Source",
-        ["Use existing profile", "Upload a new .docx"],
-        horizontal=True,
-        disabled=not existing_profiles,
-        index=0 if existing_profiles else 1,
-    )
+    r_src_col, r_pick_col = st.columns([1, 2])
+    with r_src_col:
+        resume_source = st.radio(
+            "resume_source",
+            ["Profile", "Upload"],
+            horizontal=False,
+            label_visibility="collapsed",
+            disabled=not existing_profiles,
+            index=0 if existing_profiles else 1,
+        )
+    with r_pick_col:
+        resume_path: Path | None = None
+        profile_name: str | None = None
+        if resume_source == "Profile" and existing_profiles:
+            profile_name = st.selectbox("profile", existing_profiles,
+                                        label_visibility="collapsed")
+            candidates = sorted((profiles_dir / profile_name).glob("*.docx"))
+            candidates = [c for c in candidates if not c.name.startswith("~$")]
+            if candidates:
+                resume_path = candidates[0]
+                st.caption(f"`{resume_path.name}` · {resume_path.stat().st_size // 1024} KB")
+        else:
+            uploaded = st.file_uploader("upload", type=["docx"],
+                                        label_visibility="collapsed")
+            if uploaded is not None:
+                if st.session_state.get("uploaded_name") != uploaded.name:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
+                    tmp.write(uploaded.getvalue())
+                    tmp.close()
+                    st.session_state.uploaded_path = Path(tmp.name)
+                    st.session_state.uploaded_name = uploaded.name
+                resume_path = st.session_state.uploaded_path
+                profile_name = Path(uploaded.name).stem
+                st.caption(f"`{uploaded.name}` · {len(uploaded.getvalue()) // 1024} KB")
 
-    resume_path: Path | None = None
-    profile_name: str | None = None
+    # ── Target job ────────────────────────────────────────────────────────
+    _section("Target job (for your records)")
+    j_co, j_role = st.columns(2)
+    with j_co:
+        company_name = st.text_input("Company", placeholder="e.g. Google",
+                                     label_visibility="visible")
+    with j_role:
+        role_name = st.text_input("Role", placeholder="e.g. Senior Engineer",
+                                  label_visibility="visible")
 
-    if resume_source == "Use existing profile" and existing_profiles:
-        profile_name = st.selectbox("Profile", existing_profiles)
-        candidates = sorted((profiles_dir / profile_name).glob("*.docx"))
-        candidates = [c for c in candidates if not c.name.startswith("~$")]
-        if candidates:
-            resume_path = candidates[0]
-            st.caption(
-                f"Using `{resume_path.relative_to(_ROOT)}` "
-                f"({resume_path.stat().st_size // 1024} KB)"
-            )
-    else:
-        uploaded = st.file_uploader("Resume (.docx)", type=["docx"])
-        if uploaded is not None:
-            if st.session_state.get("uploaded_name") != uploaded.name:
-                tmp = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
-                tmp.write(uploaded.getvalue())
-                tmp.close()
-                st.session_state.uploaded_path = Path(tmp.name)
-                st.session_state.uploaded_name = uploaded.name
-            resume_path = st.session_state.uploaded_path
-            profile_name = Path(uploaded.name).stem
-            st.caption(
-                f"Uploaded `{uploaded.name}` ({len(uploaded.getvalue()) // 1024} KB)"
-            )
-
-    # --- Step 2: JD source ---
-    st.subheader("2. Job description")
+    # ── Job description ───────────────────────────────────────────────────
+    _section("Job description")
 
     jd_archive_dir = _ROOT / "jd-archive"
     existing_jds = sorted(
@@ -220,36 +216,69 @@ with left_col:
     ) if jd_archive_dir.exists() else []
 
     jd_source = st.radio(
-        "Source",
-        ["Pick from jd-archive/", "Paste text"],
+        "jd_source",
+        ["jd-archive/", "Paste text"],
         horizontal=True,
+        label_visibility="collapsed",
         disabled=not existing_jds,
-        index=1,  # default to "Paste text"
+        index=1,
     )
 
     jd_text: str = ""
-    if jd_source == "Pick from jd-archive/" and existing_jds:
-        selected_jd = st.selectbox("JD file", [p.name for p in existing_jds])
+    if jd_source == "jd-archive/" and existing_jds:
+        selected_jd = st.selectbox("JD file", [p.name for p in existing_jds],
+                                   label_visibility="collapsed")
         jd_path = jd_archive_dir / selected_jd
         jd_text = jd_path.read_text(encoding="utf-8")
-        with st.expander("Preview JD"):
+        with st.expander("Preview"):
             st.markdown(jd_text)
     else:
         jd_text = st.text_area(
-            "Paste the JD", height=220, placeholder="Paste plain text or markdown…"
+            "jd_paste", height=180,
+            placeholder="Paste the job description here…",
+            label_visibility="collapsed",
         )
 
-    # --- Run button ---
-    st.divider()
+    # ── Action row ────────────────────────────────────────────────────────
+    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
     run_disabled = not (resume_path and api_keys.strip())
-    if not api_keys.strip():
-        st.warning("Set Groq API keys in the sidebar (or in `.env`).")
-    elif not resume_path:
-        st.info("Pick or upload a resume above to enable the Tailor button.")
 
-    go = st.button("Tailor my resume", type="primary", disabled=run_disabled)
+    result = st.session_state.get("result")
 
-    # --- Pipeline run ---
+    act_col, docx_col, pdf_col = st.columns([3, 2, 2])
+    with act_col:
+        if not api_keys.strip():
+            st.warning("Add Groq API key in sidebar.", icon="🔑")
+        elif not resume_path:
+            st.info("Select a resume above.", icon="📄")
+        go = st.button("Tailor my resume", type="primary",
+                       disabled=run_disabled, use_container_width=True)
+    with docx_col:
+        if result and result.docx_path and Path(result.docx_path).exists():
+            dl_name = f"{company_name or 'resume'} {role_name or ''}".strip() + ".docx"
+            st.download_button(
+                "↓ .docx",
+                data=Path(result.docx_path).read_bytes(),
+                file_name=dl_name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        else:
+            st.button("↓ .docx", disabled=True, use_container_width=True)
+    with pdf_col:
+        if result and result.pdf_path and Path(result.pdf_path).exists():
+            dl_name = f"{company_name or 'resume'} {role_name or ''}".strip() + ".pdf"
+            st.download_button(
+                "↓ .pdf",
+                data=Path(result.pdf_path).read_bytes(),
+                file_name=dl_name,
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        else:
+            st.button("↓ .pdf", disabled=True, use_container_width=True)
+
+    # ── Pipeline run ──────────────────────────────────────────────────────
     if go and resume_path:
         if not jd_text.strip():
             st.error("Please paste a job description before running.")
@@ -261,7 +290,7 @@ with left_col:
             progress_bar.progress(min(max(frac, 0.0), 1.0), text=label)
 
         try:
-            client = _build_client()
+            client = _build_client(api_keys, model)
             with st.status("Running pipeline…", expanded=False) as status:
                 result = run_tailor_pipeline(
                     resume_path=resume_path,
@@ -275,81 +304,53 @@ with left_col:
                 )
                 status.update(label="Pipeline complete", state="complete")
             st.session_state.result = result
+            st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"Pipeline failed: {type(e).__name__}: {e}")
             st.session_state.result = None
             st.exception(e)
 
-    # --- Results panel ---
-    result = st.session_state.get("result")
+    # ── Results summary ───────────────────────────────────────────────────
     if result is not None:
         st.divider()
-        st.subheader("Results")
-
         report = result.report
         badge = "PASSED" if report.passed else "FAILED"
         color = ":green" if report.passed else ":red"
         n_critical = sum(1 for i in report.issues if i.severity == "critical")
         n_warnings = sum(1 for i in report.issues if i.severity == "warning")
+
+        target_label = ""
+        if company_name or role_name:
+            target_label = f" · {company_name} {role_name}".strip()
+
         st.markdown(
-            f"**Validation:** {color}[**{badge}**] · "
+            f"{color}[**{badge}**]{target_label} · "
             f"{n_critical} critical, {n_warnings} warnings · "
-            f"keyword match = {report.keyword_match_rate:.0%}"
+            f"keyword match **{report.keyword_match_rate:.0%}**"
         )
 
-        # Download buttons
-        dl_docx, dl_pdf = st.columns(2)
-        with dl_docx:
-            if result.docx_path and Path(result.docx_path).exists():
-                st.download_button(
-                    "⬇ Download .docx",
-                    data=Path(result.docx_path).read_bytes(),
-                    file_name=Path(result.docx_path).name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True,
-                )
-        with dl_pdf:
-            if result.pdf_path and Path(result.pdf_path).exists():
-                st.download_button(
-                    "⬇ Download .pdf",
-                    data=Path(result.pdf_path).read_bytes(),
-                    file_name=Path(result.pdf_path).name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-            else:
-                st.caption("PDF: not produced")
-
-        # Validation issues
         if report.issues:
-            with st.expander(
-                f"Validation issues ({len(report.issues)})", expanded=n_critical > 0
-            ):
+            with st.expander(f"Validation issues ({len(report.issues)})",
+                             expanded=n_critical > 0):
                 for issue in report.issues:
-                    tag = "[CRITICAL]" if issue.severity == "critical" else "[warning]"
+                    tag = "[CRITICAL]" if issue.severity == "critical" else "[warn]"
                     st.markdown(f"**{tag} `{issue.section}`** — {issue.issue}")
                     if issue.original != issue.rewritten:
                         diff_text = "\n".join(
                             difflib.unified_diff(
                                 (issue.original or "").splitlines(),
                                 (issue.rewritten or "").splitlines(),
-                                lineterm="",
-                                n=1,
+                                lineterm="", n=1,
                             )
                         )
                         if diff_text:
                             st.code(diff_text, language="diff")
 
-        # Inline diff
         if result.original_resume and result.rewritten_resume:
             with st.expander("What changed"):
                 diff = _diff_resumes(result.original_resume, result.rewritten_resume)
-                if diff.strip():
-                    st.code(diff, language="diff")
-                else:
-                    st.caption("No text changes detected.")
+                st.code(diff if diff.strip() else "(no text changes)", language="diff")
 
-        # Debug / logs
         log_dir = Path(result.log_dir)
         jd_json = log_dir / "2_jd_analysis.json"
         if jd_json.exists():
@@ -358,16 +359,11 @@ with left_col:
 
         rewritten_json = log_dir / "3a_rewritten_initial.json"
         if rewritten_json.exists():
-            with st.expander("Holistic rewrite (initial pass)"):
+            with st.expander("Holistic rewrite"):
                 st.json(json.loads(rewritten_json.read_text(encoding="utf-8")))
 
         with st.expander("Groq usage"):
             st.json(result.groq_summary)
-
-        st.caption(
-            f"Artifacts: `{result.log_dir.relative_to(_ROOT) if log_dir.is_relative_to(_ROOT) else log_dir}`"
-        )
-
 
 # =========================================================================
 # RIGHT — PDF preview
@@ -381,23 +377,20 @@ with right_col:
         and Path(result.pdf_path).exists()
     )
 
-    st.subheader("PDF Preview")
+    st.markdown(
+        "<p style='font-weight:600;font-size:1.1rem;margin-bottom:6px'>PDF Preview</p>",
+        unsafe_allow_html=True,
+    )
 
     if pdf_ready:
-        _show_pdf_inline(Path(result.pdf_path), height=920)
+        _show_pdf_inline(Path(result.pdf_path), height=860)
     else:
         st.markdown(
             "<div style='"
-            "height:400px;"
-            "display:flex;"
-            "align-items:center;"
-            "justify-content:center;"
-            "border:2px dashed #444;"
-            "border-radius:10px;"
-            "color:#888;"
-            "font-size:1rem;"
-            "'>"
-            "PDF preview will appear here after running the pipeline."
-            "</div>",
+            "height:500px;"
+            "display:flex;align-items:center;justify-content:center;"
+            "border:2px dashed #555;border-radius:10px;"
+            "color:#777;font-size:0.95rem;"
+            "'>PDF preview appears here after running</div>",
             unsafe_allow_html=True,
         )
