@@ -27,9 +27,12 @@ the surplus items are appended inline to the last existing category's
 line. The .docx paragraph count stays stable.
 """
 
+from copy import deepcopy
 from pathlib import Path
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from src.models.schemas import Experience, Resume
 
@@ -144,19 +147,63 @@ def _insert_new_bullets_for_recent(doc, resume: Resume) -> None:
             _try_set_style(p, _BULLET_STYLE_NAME)
         return
 
+    # Use the last existing bullet as a formatting template so the inserted
+    # paragraphs pick up the same numPr (bullet symbol + list definition).
+    last_bullet_idx = recent.indices.bullet_idxs[-1] if recent.indices.bullet_idxs else None
+    template_para = paragraphs[last_bullet_idx] if last_bullet_idx is not None else None
+
     anchor = paragraphs[anchor_idx]
     for text in extras:
-        new_para = anchor.insert_paragraph_before(text)
-        _try_set_style(new_para, _BULLET_STYLE_NAME)
+        if template_para is not None:
+            _insert_cloned_bullet(anchor._p, template_para, text)
+        else:
+            new_para = anchor.insert_paragraph_before(text)
+            _try_set_style(new_para, _BULLET_STYLE_NAME)
 
 
 def _try_set_style(paragraph, style_name: str) -> None:
     try:
         paragraph.style = paragraph.part.document.styles[style_name]
     except KeyError:
-        # Style not in this document; leave default. Word's "Normal" still
-        # renders fine; bullets just won't have the List Paragraph indent.
         pass
+
+
+def _insert_cloned_bullet(anchor_p, template_para, text: str) -> None:
+    """Insert a new bullet paragraph immediately before anchor_p.
+
+    Deep-clones the template paragraph's XML so the inserted paragraph
+    inherits the full pPr (numPr, spacing, paragraph-level rPr giving the
+    correct font/size/color) and uses a new run whose rPr is copied from
+    the template's first run. This ensures the inserted bullet is visually
+    identical to the surrounding bullets.
+    """
+    XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+    # Clone the full paragraph element (pPr intact — numPr, style, spacing…).
+    new_p = deepcopy(template_para._p)
+
+    # Strip existing text content; preserve pPr.
+    for r in new_p.findall(qn("w:r")):
+        new_p.remove(r)
+    for hl in new_p.findall(qn("w:hyperlink")):
+        new_p.remove(hl)
+
+    # Build a new run with the same rPr as the template's first run.
+    new_r = OxmlElement("w:r")
+    template_runs = template_para._p.findall(qn("w:r"))
+    if template_runs:
+        src_rPr = template_runs[0].find(qn("w:rPr"))
+        if src_rPr is not None:
+            new_r.append(deepcopy(src_rPr))
+
+    t = OxmlElement("w:t")
+    t.text = text
+    if text and (text[0] == " " or text[-1] == " "):
+        t.set(XML_SPACE, "preserve")
+    new_r.append(t)
+    new_p.append(new_r)
+
+    anchor_p.addprevious(new_p)
 
 
 def _write_skills_section(paragraphs, resume: Resume, raw: list[str]) -> None:
