@@ -60,6 +60,10 @@ logs/
 profiles/*/
 !profiles/.gitkeep
 
+# Generated / personal output files — local only
+history/
+src/ui/static/preview_*.pdf
+
 # Temp files
 *.tmp
 ~$*.docx
