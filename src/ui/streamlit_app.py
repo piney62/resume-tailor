@@ -86,6 +86,27 @@ def _diff_resumes(original: Resume, rewritten: Resume) -> str:
     )
 
 
+_HISTORY_DIR = _ROOT / "history"
+
+
+def _save_history(pdf_path: Path, company: str, role: str) -> Path | None:
+    """Copy PDF to history/ as '{company} {role}.pdf'. Returns dest path or None."""
+    parts = [p.strip() for p in [company, role] if p.strip()]
+    if not parts:
+        return None
+    _HISTORY_DIR.mkdir(exist_ok=True)
+    stem = " ".join(parts)
+    for ch in r'\/:*?"<>|':
+        stem = stem.replace(ch, "_")
+    dest = _HISTORY_DIR / f"{stem}.pdf"
+    counter = 2
+    while dest.exists():
+        dest = _HISTORY_DIR / f"{stem} ({counter}).pdf"
+        counter += 1
+    shutil.copy2(pdf_path, dest)
+    return dest
+
+
 def _static_pdf_url(pdf_path: Path) -> str:
     """Copy PDF to the static dir (cache-busted) and return its /app/static/ URL."""
     dest_name = f"preview_{pdf_path.stat().st_mtime_ns}.pdf"
@@ -178,6 +199,22 @@ with st.sidebar:
         value=False,
         help="Automatically saves the PDF to your Downloads folder when the pipeline finishes.",
     )
+
+    st.divider()
+    st.header("History")
+    history_pdfs = sorted(_HISTORY_DIR.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True) if _HISTORY_DIR.exists() else []
+    if history_pdfs:
+        for hp in history_pdfs:
+            st.download_button(
+                label=hp.stem,
+                data=hp.read_bytes(),
+                file_name=hp.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"hist_{hp.name}",
+            )
+    else:
+        st.caption("No history yet.")
 
 
 # =========================================================================
@@ -292,7 +329,7 @@ with left_col:
         resume_owner = result.original_resume.header.name
     elif profile_name:
         resume_owner = profile_name
-    dl_stem = f"{resume_owner} resume".strip() if resume_owner else "resume"
+    dl_stem = resume_owner if resume_owner else "resume"
 
     act_col, docx_col, pdf_col = st.columns([3, 2, 2])
     with act_col:
@@ -351,6 +388,8 @@ with left_col:
                 )
                 status.update(label="Pipeline complete", state="complete")
             st.session_state.result = result
+            if result.pdf_path and Path(result.pdf_path).exists():
+                _save_history(Path(result.pdf_path), company_name, role_name)
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"Pipeline failed: {type(e).__name__}: {e}")
@@ -379,11 +418,16 @@ with left_col:
         n_critical = sum(1 for i in report.issues if i.severity == "critical")
         n_warnings = sum(1 for i in report.issues if i.severity == "warning")
 
-        target = f" · {company_name}" if company_name else ""
-        target += f" {role_name}" if role_name else ""
+        if company_name or role_name:
+            parts = [p for p in [company_name, role_name] if p]
+            st.markdown(
+                f"<p style='font-size:1rem;font-weight:600;margin:0 0 4px 0'>"
+                f"{'  ·  '.join(parts)}</p>",
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
-            f"{color}[**{badge}**]{target} · "
+            f"{color}[**{badge}**] · "
             f"{n_critical} critical, {n_warnings} warnings · "
             f"keyword match **{report.keyword_match_rate:.0%}**"
         )

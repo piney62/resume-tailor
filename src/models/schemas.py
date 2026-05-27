@@ -153,12 +153,14 @@ class ValidationReport(_Base):
 
 
 class HolisticExperienceOutput(_Base):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
     intro: str
     bullets: list[str]
     skills_line: Optional[str] = None
 
 
 class HolisticRewriteOutput(_Base):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
     """LLM output schema for the single-call holistic rewriter.
 
     Only carries fields the LLM is allowed to edit. The pipeline merges

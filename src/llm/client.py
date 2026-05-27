@@ -7,6 +7,9 @@ Why a custom wrapper instead of using groq.Groq directly:
   per-key, not global.
 - Transient 429 / 5xx / connection errors retry with exponential backoff;
   Retry-After is honored when the server provides it.
+- When a key's daily quota is exhausted (Retry-After > MAX_RETRY_SLEEP),
+  that key is marked exhausted and the next available key is tried instead
+  of raising immediately.
 """
 
 import json
@@ -36,6 +39,10 @@ class CallLog:
     error: Optional[str] = None
 
 
+class _QuotaExhausted(Exception):
+    """Raised internally when a key's daily quota is exhausted (Retry-After too long)."""
+
+
 class GroqClient:
     DEFAULT_RPM = 25
     DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -58,6 +65,7 @@ class GroqClient:
         self._rpm = rpm_per_key
         self._next_key = 0
         self._history: list[deque[float]] = [deque() for _ in self._keys]
+        self._exhausted_keys: set[int] = set()
         self._logs: list[CallLog] = []
         self._lock = threading.Lock()
         self._sleep = sleep_fn
@@ -113,9 +121,15 @@ class GroqClient:
             except RateLimitError as e:
                 last_err = e
                 self._log(idx, t0, None, attempt, error=f"RateLimitError: {e}")
+                try:
+                    wait = self._retry_wait(e, attempt)
+                except _QuotaExhausted:
+                    with self._lock:
+                        self._exhausted_keys.add(idx)
+                    logger.warning("Key %d daily quota exhausted; switching to next key", idx)
+                    continue  # don't increment attempt — just pick another key
                 if attempt >= max_retries:
                     break
-                wait = self._retry_wait(e, attempt)
                 logger.warning("RateLimitError key=%d attempt=%d sleep=%.2fs", idx, attempt, wait)
                 self._sleep(wait)
                 attempt += 1
@@ -209,19 +223,26 @@ class GroqClient:
                 while q and q[0] <= window_start:
                     q.popleft()
             n = len(self._keys)
+            available = [i for i in range(n) if i not in self._exhausted_keys]
+            if not available:
+                raise RuntimeError(
+                    f"All {n} Groq API keys have exhausted their daily quota. "
+                    "Add new keys in the sidebar or wait until quota resets (UTC midnight / 9am KST)."
+                )
             for offset in range(n):
                 idx = (self._next_key + offset) % n
+                if idx in self._exhausted_keys:
+                    continue
                 if len(self._history[idx]) < self._rpm:
                     self._history[idx].append(now)
                     self._next_key = (idx + 1) % n
                     return idx
-            earliest = min(q[0] for q in self._history if q)
+            earliest = min(self._history[i][0] for i in available if self._history[i])
             wait = max(0.0, earliest + 60.0 - now) + 0.05
-            logger.info("all %d keys saturated at rpm=%d; sleeping %.2fs", n, self._rpm, wait)
+            logger.info("all %d active keys saturated at rpm=%d; sleeping %.2fs", len(available), self._rpm, wait)
             self._sleep(wait)
 
-    # If Retry-After exceeds this, the key's quota is exhausted — raise immediately
-    # rather than sleeping for hours.
+    # If Retry-After exceeds this, the key's daily quota is exhausted.
     _MAX_RETRY_SLEEP = 30.0
 
     def _retry_wait(self, err: Exception, attempt: int) -> float:
@@ -232,13 +253,9 @@ class GroqClient:
                 if ra:
                     server_wait = float(ra)
                     if server_wait > self._MAX_RETRY_SLEEP:
-                        raise RuntimeError(
-                            f"Groq API key is rate-limited for {server_wait:.0f}s "
-                            f"(~{server_wait / 3600:.1f}h) — quota likely exhausted. "
-                            "Add another API key in the sidebar or wait until the quota resets."
-                        ) from err
+                        raise _QuotaExhausted(server_wait)
                     return server_wait
-            except RuntimeError:
+            except _QuotaExhausted:
                 raise
             except (AttributeError, ValueError, TypeError):
                 pass
